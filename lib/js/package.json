@@ -1,0 +1,15 @@
+{
+  "name": "korean-address-converter",
+  "version": "1.0.0",
+  "description": "Korean address converter using Juso API and Nominatim",
+  "main": "src/main.js",
+  "scripts": {
+    "test": "echo \"No test specified\""
+  },
+  "dependencies": {
+    "node-fetch": "^2.6.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
