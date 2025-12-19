@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map/flutter_map.dart' as latlong;
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:provider/provider.dart';
@@ -30,6 +31,9 @@ import '../services/navigation_service.dart';
 import '../pages/user_promotions_page.dart';
 import 'package:maplibre_gl/maplibre_gl.dart' as maplibre;
 import '../widgets/unified_search_panel.dart';
+import '../models/personal_place_model.dart';
+import '../providers/personal_places_provider.dart';
+import '../widgets/save_place_dialog.dart';
 
 class MapPage extends StatefulWidget {
   final String userId;
@@ -88,18 +92,39 @@ class _MapPageState extends State<MapPage> {
   RouteResult? _currentRoute;
   TransportMode _selectedTransportMode = TransportMode.driving;
   bool _showShopsLayer = true;
+  final Map<String, bool> _useHighwaysMap = {}; // ✅ 샵별 고속도로 옵션
+  final Map<String, TransportMode> _shopTransportModeMap = {}; // ✅ 샵별 이동수단
 
   // ✅ 새로 추가: 경로 안내 관련
   List<dynamic> _currentInstructions = [];
   int? _selectedInstructionIndex;
   Symbol? _selectedInstructionMarker;
   bool _isInstructionPanelMinimized = false; // ✅ 최소화 상태
+  
+  // ✅ FlutterMap용 선택된 instruction 마커
+  latlong.Marker? _selectedInstructionMarkerFlutter;
 
   // ✅ 샵 마커 관리 추가
   final Map<String, ShopModel> _shopMarkers = {}; // shopId -> ShopModel
   final Map<String, List<ShopModel>> _shopClusterMarkers = {}; // cluster_id -> List<ShopModel>
 
   Symbol? _addressPinMarker; // ✅ 주소 검색 결과 핀
+
+  NavigationLanguage _navLanguage = NavigationLanguage.korean; // ✅ 추가
+
+  // ✅ 핀 조정 모드 관련
+  bool _isPinAdjustMode = false;
+  LatLng? _adjustingPinLocation;
+  String? _adjustingAddress;
+  Symbol? _adjustingPinSymbol;
+
+  // ✅ 추가: 카메라 중심 추적
+  LatLng? _currentCameraCenter;
+
+  // ✅ 개인 장소 마커 관리 추가
+  final Map<String, PersonalPlaceModel> _personalPlaceMarkers = {}; // placeId -> PersonalPlaceModel
+  final Map<String, List<PersonalPlaceModel>> _personalPlaceClusterMarkers = {}; // cluster_id -> List<PersonalPlaceModel>
+  bool _showPersonalPlacesLayer = true; // ✅ 레이어 토글
 
   // ✅ 플랫폼 확인
   // bool get _isDesktop {
@@ -145,7 +170,6 @@ class _MapPageState extends State<MapPage> {
   // ============================================
   // 수정 1: initState - 타이머 복원 + 충돌 방지
   // ============================================
-  // lib/pages/map_page.dart - initState 부분 수정
   @override
   void initState() {
     super.initState();
@@ -154,57 +178,33 @@ class _MapPageState extends State<MapPage> {
     debugPrint('🎬 ════════════════════ MapPage initState ════════════════════');
     debugPrint('📍 userId: ${widget.userId}');
     
-    final provider = context.read<LocationsProvider>();
-
-    // ✅ 위치 로드 후 지도 카메라 초기화
+    // ✅ 1. 기본 초기화 (동기)
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
       _ensureDefaultGroup();
       _loadGroupsFromDB();
-      if (!mounted) return;
       
       final provider = context.read<LocationsProvider>();
-      final myLocation = provider.locations[widget.userId];
-      
-      if (myLocation != null) {
-        if (_isDesktop) {
-          // FlutterMap 초기화
-          _mapController.move(
-            latlong.LatLng(myLocation.lat, myLocation.lng),
-            16.0,
-          );
-          debugPrint('✅ FlutterMap 초기 위치 설정: (${myLocation.lat}, ${myLocation.lng})');
-        } else if (_mapLibreController != null) {
-          // MapLibre 초기화
-          _mapLibreController!.animateCamera(
-            CameraUpdate.newLatLngZoom(
-              LatLng(myLocation.lat, myLocation.lng),
-              16.0,
-            ),
-            duration: const Duration(milliseconds: 500),
-          );
-          debugPrint('✅ MapLibre 초기 위치 설정: (${myLocation.lat}, ${myLocation.lng})');
-        }
+      provider.resetRealtimeConnection();
+      provider.startAll(startLocationStream: true);
+
+      if (_mapMode == 'LOCAL') {
+        _activateLocalMode(provider);
+      } else {
+        _activateRealtimeMode(provider);
+      }
+
+      _startStopTracking(provider);
+      _startElapsedTimer(provider);
+
+      if (_isMobile) {
+        _startMarkerUpdateTimer(provider);
       }
     });
 
-    provider.resetRealtimeConnection();
-    provider.startAll(startLocationStream: true);
-
-    if (_mapMode == 'LOCAL') {
-      _activateLocalMode(provider);
-    } else {
-      _activateRealtimeMode(provider);
-    }
-
-    _startStopTracking(provider);
-    _startElapsedTimer(provider);
-
-    if (_isMobile) {
-      _startMarkerUpdateTimer(provider);
-    }
-
-    // ✅ 위치 로드 대기 + 첫 카메라 이동
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // ✅ 2. 위치 로드 및 지도 초기화
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       
       debugPrint('🔄 위치 로드 대기 중...');
@@ -213,8 +213,13 @@ class _MapPageState extends State<MapPage> {
       int attempts = 0;
       const maxAttempts = 10; // 5초 (0.5초 * 10)
       
-      Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      Timer.periodic(const Duration(milliseconds: 500), (timer) async {
         attempts++;
+        
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
         
         final locProvider = context.read<LocationsProvider>();
         final myLocation = locProvider.locations[widget.userId];
@@ -223,7 +228,7 @@ class _MapPageState extends State<MapPage> {
           timer.cancel();
           debugPrint('✅ 위치 로드 완료: (${myLocation.lat}, ${myLocation.lng})');
           
-          // ✅ 내 위치로 카메라 즉시 이동 (중요!)
+          // 지도 이동
           if (_isDesktop) {
             _mapController.move(
               latlong.LatLng(myLocation.lat, myLocation.lng),
@@ -231,7 +236,7 @@ class _MapPageState extends State<MapPage> {
             );
             debugPrint('✅ FlutterMap 내 위치로 이동 완료');
           } else if (_mapLibreController != null) {
-            _mapLibreController!.animateCamera(
+            await _mapLibreController!.animateCamera(
               CameraUpdate.newLatLngZoom(
                 LatLng(myLocation.lat, myLocation.lng),
                 16.0,
@@ -240,13 +245,13 @@ class _MapPageState extends State<MapPage> {
             );
             debugPrint('✅ MapLibre 내 위치로 이동 완료');
           }
-          
+
           // ✅ UserMessageProvider 초기화
-          _initializeMessageProvider(myLocation);
-          
+          if (mounted) {
+            _initializeMessageProvider(myLocation);
+          }
         } else if (attempts >= maxAttempts) {
           timer.cancel();
-          debugPrint('⚠️  위치 로드 타임아웃');
           debugPrint('📍 현재 위치 목록: ${locProvider.locations.keys.toList()}');
           
           // 더미 위치로라도 초기화 (서울 시청)
@@ -284,26 +289,543 @@ class _MapPageState extends State<MapPage> {
       });
     });
     
-    // ShopsMapProvider 초기화
+    // ✅ 3. 샵 위치 선택 모드 확인 (arguments 처리)
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      
+      // ✅ arguments에서 샵 위치 선택 모드 확인
+      final args = ModalRoute.of(context)?.settings.arguments;
+      
+      debugPrint('');
+      debugPrint('🔍 ════════════════════ Arguments 확인 ════════════════════');
+      debugPrint('🔍 Arguments: $args');
+      debugPrint('🔍 Arguments type: ${args.runtimeType}');
+      debugPrint('🔍 Is Map: ${args is Map}');
+      if (args is Map) {
+        debugPrint('🔍 Keys: ${args.keys.toList()}');
+        debugPrint('🔍 Mode value: ${args['mode']}');
+      }
+      debugPrint('🔍 ══════════════════════════════════════════════════');
+      debugPrint('');
+      
+      if (args != null && args is Map && args['mode'] == 'shop_location_picker') {
+        debugPrint('');
+        debugPrint('🏪 ════════════════════ 샵 위치 선택 모드 ════════════════════');
+        debugPrint('📍 초기 위치: (${args['lat']}, ${args['lng']})');
+        debugPrint('📫 초기 주소: ${args['address']}');
+        
+        // 약간의 딜레이 후 핀 조정 모드 시작
+        await Future.delayed(const Duration(milliseconds: 1500));
+        
+        if (mounted) {
+          debugPrint('✅ mounted 상태 확인 완료');
+          _startPinAdjustMode(
+            args['lat'] ?? 37.408915,
+            args['lng'] ?? 127.148245,
+            args['address'] ?? '',
+          );
+          debugPrint('✅ 핀 조정 모드 활성화 완료');
+        } else {
+          debugPrint('⚠️ Widget이 dispose됨');
+        }
+        
+        debugPrint('🏪 ════════════════════════════════════════════════════════');
+        debugPrint('');
+      } else {
+        debugPrint('ℹ️ 일반 지도 모드');
+      }
+    });
+    
+    // ✅ 4. Provider 초기화 (순서 보장)
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
+      if (!mounted) return;
+      
+      try {
+        _loadUserRole();
+        // ShopsMapProvider
         final shopsProvider = context.read<ShopsMapProvider>();
         debugPrint('📦 ShopsMapProvider 초기화 중...');
         shopsProvider.fetchAllShops();
         shopsProvider.startAutoRefresh();
         debugPrint('✅ ShopsMapProvider 초기화 완료');
-      }
-    });
-    
-    // 유저 역할 로드
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
+        // PersonalPlacesProvider (try-catch로 보호)
+        try {
+          final placesProvider = context.read<PersonalPlacesProvider>();
+          placesProvider.fetchMyPlaces(widget.userId).then((_) {
+            debugPrint('✅ 개인 장소 초기 로드 완료');
+            // 지도 마커 업데이트
+            if (mounted && _isMobile && _mapLibreController != null) {
+              final locProvider = context.read<LocationsProvider>();
+              _updateMapLibreMarkers(locProvider);
+            }
+        });
+        } catch (e) {
+          debugPrint('⚠️ PersonalPlacesProvider 초기화 실패: $e');
+          debugPrint('💡 PersonalPlacesProvider가 등록되지 않았을 수 있습니다.');
+        }
+        
+        // 유저 역할 로드
         _loadUserRole();
+      } catch (e) {
+        debugPrint('❌ Provider 초기화 오류: $e');
       }
+    try {
+      final placesProvider = context.read<PersonalPlacesProvider>();
+      
+      debugPrint('');
+      debugPrint('📍 ════════════════════ 개인 장소 초기 로드 시작 ════════════════════');
+      
+      placesProvider.fetchMyPlaces(widget.userId);
+      
+      debugPrint('✅ 개인 장소 로드 완료: ${placesProvider.allPlaces.length}개');
+      
+      // Desktop이면 setState로 재구성
+      if (mounted && _isDesktop) {
+        setState(() {});
+        debugPrint('💻 Desktop: setState 호출');
+      }
+      
+      // Mobile이면 마커 업데이트
+      if (mounted && _isMobile && _mapLibreController != null) {
+        Future.delayed(const Duration(milliseconds: 500));
+        final locProvider = context.read<LocationsProvider>();
+        _updateMapLibreMarkers(locProvider);
+        debugPrint('📱 Mobile: 마커 업데이트 완료');
+      }
+      
+      debugPrint('📍 ════════════════════ 개인 장소 초기 로드 완료 ════════════════════');
+      debugPrint('');
+    } catch (e) {
+      debugPrint('⚠️ PersonalPlacesProvider 초기화 실패: $e');
+    }
     });
-    
     debugPrint('🎬 ════════════════════ initState 완료 ════════════════════');
     debugPrint('');
+  }
+
+  // ============================================
+  // ✅ 개인 장소 클러스터링 로직
+  // ============================================
+  List<List<PersonalPlaceModel>> _clusterPersonalPlaces(List<PersonalPlaceModel> places) {
+    if (places.isEmpty) return [];
+    
+    double clusterRadiusMeters;
+    if (_currentZoom >= 18) {
+      clusterRadiusMeters = 15;
+    } else if (_currentZoom >= 17) {
+      clusterRadiusMeters = 30;
+    } else if (_currentZoom >= 16) {
+      clusterRadiusMeters = 60;
+    } else if (_currentZoom >= 15) {
+      clusterRadiusMeters = 100;
+    } else if (_currentZoom >= 14) {
+      clusterRadiusMeters = 200;
+    } else if (_currentZoom >= 13) {
+      clusterRadiusMeters = 400;
+    } else if (_currentZoom >= 12) {
+      clusterRadiusMeters = 800;
+    } else if (_currentZoom >= 11) {
+      clusterRadiusMeters = 1500;
+    } else {
+      clusterRadiusMeters = 3000;
+    }
+    
+    final List<List<PersonalPlaceModel>> clusters = [];
+    final Set<String> processed = {};
+
+    for (final place in places) {
+      if (processed.contains(place.id)) continue;
+
+      final cluster = <PersonalPlaceModel>[place];
+      processed.add(place.id);
+
+      for (final other in places) {
+        if (processed.contains(other.id)) continue;
+        
+        final distanceDegrees = sqrt(
+          pow(place.lat - other.lat, 2) + pow(place.lng - other.lng, 2)
+        );
+        final distanceMeters = distanceDegrees * 111320.0;
+        
+        if (distanceMeters < clusterRadiusMeters) {
+          cluster.add(other);
+          processed.add(other.id);
+        }
+      }
+
+      clusters.add(cluster);
+    }
+
+    return clusters;
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ 4. 핀 조정 모드 시작
+  // ═══════════════════════════════════════════════════════════
+  void _startPinAdjustMode(double lat, double lng, String address) async {
+    debugPrint('📍 ═══════════════ 핀 조정 모드 시작 ═══════════════');
+    
+    // ✅ 함수 시작 시 mounted 체크
+    if (!mounted) {
+      debugPrint('⚠️ _startPinAdjustMode: Widget not mounted at start');
+      return;
+    }
+    
+    debugPrint('📫 주소: $address');
+    debugPrint('📍 좌표: ($lat, $lng)');
+    debugPrint('🔧 현재 _isPinAdjustMode: $_isPinAdjustMode');
+    
+    // ✅ setState 전 체크
+    try {
+      _setStateWrapper(() {
+        _isPinAdjustMode = true;
+        _adjustingPinLocation = LatLng(lat, lng);
+        _adjustingAddress = address;
+      });
+      debugPrint('✅ setState 완료');
+      debugPrint('✅ 변경 후 _isPinAdjustMode: $_isPinAdjustMode');
+    } catch (e) {
+      debugPrint('❌ setState 오류: $e');
+      return;
+    }
+    
+    // 지도 이동
+    if (_isDesktop) {
+      _mapController.move(latlong.LatLng(lat, lng), 16.0);
+    } else if (_mapLibreController != null) {
+      await _mapLibreController!.animateCamera(
+        CameraUpdate.newLatLngZoom(
+          LatLng(lat, lng),
+          16.0,
+        ),
+        duration: const Duration(milliseconds: 800),
+      );
+      
+      // ✅ 비동기 작업 후 mounted 체크
+      if (!mounted) {
+        debugPrint('⚠️ Widget disposed after camera animation');
+        return;
+      }
+    }
+    
+    debugPrint('✅ 핀 조정 모드 활성화');
+    debugPrint('📍 ═══════════════════════════════════════════════');
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ 5. 핀 위치 확정
+  // ═══════════════════════════════════════════════════════════
+  Future<void> _confirmPinLocation() async {
+    debugPrint('');
+    debugPrint('✅ ═══════════════ 핀 위치 확정 ═══════════════');
+    
+    LatLng finalLocation;
+    
+    // 현재 지도 중심 좌표 가져오기
+    if (_isDesktop) {
+      final center = _mapController.camera.center;
+      finalLocation = LatLng(center.latitude, center.longitude);
+      debugPrint('🖥️ Desktop 모드: FlutterMap 중심 사용');
+    } else {
+      // ✅ MapLibre는 추적 중인 카메라 중심 또는 조정 중인 위치 사용
+      if (_adjustingPinLocation != null) {
+        finalLocation = _adjustingPinLocation!;
+        debugPrint('📱 Mobile 모드: 추적 중인 위치 사용');
+      } else if (_currentCameraCenter != null) {
+        finalLocation = _currentCameraCenter!;
+        debugPrint('📱 Mobile 모드: 카메라 중심 사용');
+      } else {
+        debugPrint('⚠️ 위치 정보 없음, 함수 종료');
+        return;
+      }
+    }
+    
+    debugPrint('📍 최종 좌표: (${finalLocation.latitude.toStringAsFixed(6)}, ${finalLocation.longitude.toStringAsFixed(6)})');
+    
+    // ✅ 핀 심볼 추가 (MapLibre만)
+    if (!_isDesktop && _mapLibreController != null) {
+      // 기존 조정 핀 제거
+      if (_adjustingPinSymbol != null) {
+        try {
+          await _mapLibreController!.removeSymbol(_adjustingPinSymbol!);
+          debugPrint('🗑️ 기존 조정 핀 제거');
+        } catch (e) {
+          debugPrint('⚠️ 조정 핀 제거 실패: $e');
+        }
+      }
+      
+      // 새 핀 추가
+      try {
+        if (!_iconsRegistered) {
+          await _registerCustomIcons();
+        }
+        
+        _adjustingPinSymbol = await _mapLibreController!.addSymbol(
+          SymbolOptions(
+            geometry: finalLocation,
+            iconImage: 'circle_red',
+            iconSize: 1.5,
+            iconAnchor: 'center',
+          ),
+        );
+        debugPrint('✅ 핀 심볼 추가 완료');
+      } catch (e) {
+        debugPrint('❌ 핀 심볼 추가 실패: $e');
+      }
+    }
+    
+    // ✅ 저장/길찾기 다이얼로그 표시
+    _showPinActionDialog(
+      finalLocation.latitude,
+      finalLocation.longitude,
+      _adjustingAddress ?? '주소 정보 없음',
+    );
+    
+    // 조정 모드 종료
+    setState(() {
+      _isPinAdjustMode = false;
+    });
+    
+    debugPrint('✅ ═══════════════════════════════════════════════');
+    debugPrint('');
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ 6. 핀 액션 다이얼로그 (저장/길찾기)
+  // ═══════════════════════════════════════════════════════════
+  void _showPinActionDialog(double lat, double lng, String address) {
+    // ✅ 샵 위치 선택 모드인지 확인
+    final args = ModalRoute.of(context)?.settings.arguments;
+    final isShopLocationPicker = args is Map && args['mode'] == 'shop_location_picker';
+    
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 헤더
+            Row(
+              children: [
+                const Icon(Icons.place, color: Colors.deepPurple, size: 28),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    '장소 관리',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const Divider(height: 24),
+            
+            // 주소 정보
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.location_on, size: 20, color: Colors.grey),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      address,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            
+            // ✅ 샵 위치 선택 모드일 때 "이 위치 사용하기" 버튼
+            if (isShopLocationPicker)
+              Column(
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context); // BottomSheet 닫기
+                        Navigator.pop(context, { // MapPage 닫기 + 결과 반환
+                          'lat': lat,
+                          'lng': lng,
+                          'address': address,
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                      icon: const Icon(Icons.check_circle, size: 24),
+                      label: const Text(
+                        '이 위치 사용하기',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            
+            // 버튼들 (샵 위치 선택 모드가 아닐 때만)
+            if (!isShopLocationPicker)
+              Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      
+                      // ✅ 다이얼로그 표시 및 저장 완료 대기
+                      final saved = await showDialog<bool>(
+                        context: context,
+                        builder: (dialogContext) => ChangeNotifierProvider.value(
+                          value: context.read<PersonalPlacesProvider>(),
+                          child: SavePlaceDialog(
+                            userId: widget.userId,
+                            address: address,
+                            lat: lat,
+                            lng: lng,
+                            availableGroups: _groups,
+                          ),
+                        ),
+                      );
+                      
+                      // ✅ 저장 완료 시 마커 업데이트
+                      if (saved == true && mounted) {
+                        debugPrint('');
+                        debugPrint('🔄 ════════════════════ 저장 후 마커 업데이트 ════════════════════');
+                        
+                        // 약간의 지연 (DB 동기화 대기)
+                        await Future.delayed(const Duration(milliseconds: 800));
+                        
+                        if (!mounted) return;
+                        
+                        if (_isDesktop) {
+                          // Desktop: setState로 위젯 트리 재구성
+                          debugPrint('💻 Desktop 모드: setState로 재구성');
+                          setState(() {
+                            // FlutterMap은 Consumer로 감싸져 있어서 자동으로 업데이트됨
+                          });
+                        } else if (_mapLibreController != null) {
+                          // Mobile: 마커 업데이트
+                          debugPrint('📱 Mobile 모드: 마커 업데이트');
+                          final locProvider = context.read<LocationsProvider>();
+                          await _updateMapLibreMarkers(locProvider);
+                        }
+                        
+                        debugPrint('✅ 마커 업데이트 완료');
+                        debugPrint('🔄 ════════════════════════════════════════════════════════');
+                        debugPrint('');
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.deepPurple,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    icon: const Icon(Icons.save),
+                    label: const Text('주소 저장'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _navigateToAddress(lat, lng, address);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    icon: const Icon(Icons.navigation),
+                    label: const Text('길찾기'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // ✅ 8. 주소로 길찾기
+  // ═══════════════════════════════════════════════════════════
+  Future<void> _navigateToAddress(double lat, double lng, String address) async {
+    if (!mounted) return;
+    
+    final provider = context.read<LocationsProvider>();
+    final myLocation = provider.locations[widget.userId];
+    
+    if (myLocation == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('현재 위치를 확인할 수 없습니다')),
+        );
+      }
+      return;
+    }
+    
+    try {
+      final navigationService = NavigationService();
+      final route = await navigationService.getRoute(
+        start: latlong.LatLng(myLocation.lat, myLocation.lng),
+        end: latlong.LatLng(lat, lng),
+        mode: _selectedTransportMode,
+      );
+      
+      // ✅ 비동기 작업 후 mounted 체크
+      if (!mounted) return;
+      
+      if (route == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('❌ 경로를 찾을 수 없습니다')),
+          );
+        }
+        return;
+      }
+      
+      // ✅ setState 전 체크
+      if (!mounted) return;
+      
+      setState(() => _currentRoute = route);
+      
+      if (_isDesktop) {
+        _showRouteOnFlutterMap(route, null);
+      } else {
+        await _showRouteOnMapLibre(route, null);
+      }
+      
+      // ✅ 다시 체크
+      if (!mounted) return;
+      
+      _showNavigationPanelForAddress(address, lat, lng, route);
+    } catch (e) {
+      debugPrint('❌ 길찾기 오류: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('경로 생성 실패: $e')),
+        );
+      }
+    }
   }
 
   // ============================================
@@ -379,7 +901,53 @@ class _MapPageState extends State<MapPage> {
         return;
       }
     }
+
+    // ✅ Step 2.5: 개인 장소 클러스터
+    debugPrint('⏳ Step 2.5: 개인 장소 클러스터 확인 중...');
     
+    for (var entry in _personalPlaceClusterMarkers.entries) {
+      final cluster = entry.value;
+      
+      if (cluster.isEmpty) continue;
+      
+      double sumLat = 0, sumLng = 0;
+      for (final place in cluster) {
+        sumLat += place.lat;
+        sumLng += place.lng;
+      }
+      final centerLat = sumLat / cluster.length;
+      final centerLng = sumLng / cluster.length;
+      
+      final distance = sqrt(
+        pow(centerLat - clickedLatLng.latitude, 2) + 
+        pow(centerLng - clickedLatLng.longitude, 2)
+      );
+      
+      if (distance < tolerance) {
+        debugPrint('✅ 개인 장소 클러스터 매치! ${cluster.length}개');
+        _showPersonalPlacesListBottomSheet(cluster);
+        return;
+      }
+    }
+    
+    // ✅ Step 2.6: 단일 개인 장소
+    debugPrint('⏳ Step 2.6: 단일 개인 장소 확인 중...');
+    
+    for (var entry in _personalPlaceMarkers.entries) {
+      final place = entry.value;
+      
+      final distance = sqrt(
+        pow(place.lat - clickedLatLng.latitude, 2) + 
+        pow(place.lng - clickedLatLng.longitude, 2)
+      );
+      
+      if (distance < tolerance) {
+        debugPrint('✅ 단일 개인 장소 매치! ${place.placeName}');
+        _showPersonalPlaceInfo(place);
+        return;
+      }
+    }
+
     // ✅ Step 3: 유저 클러스터 확인
     debugPrint('⏳ Step 3: 유저 클러스터 확인 중...');
     
@@ -436,6 +1004,165 @@ class _MapPageState extends State<MapPage> {
   }
 
   // ============================================
+  // ✅ 개인 장소 정보 표시
+  // ============================================
+  void _showPersonalPlaceInfo(PersonalPlaceModel place) {
+    _showNavigationBottomSheet(
+      entityId: place.id,
+      entityName: place.placeName, // ✅ placeName
+      subtitle: place.category,
+      lat: place.lat,
+      lng: place.lng,
+      headerColor: Colors.green,
+      icon: Icons.place,
+      additionalInfo: [
+        _buildInfoRow(Icons.location_on, '주소', place.address),
+        // ✅ null 체크
+        if (place.memo != null && place.memo!.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          _buildInfoRow(Icons.note, '메모', place.memo!),
+        ],
+      ],
+      // ✅ 삭제 로직 인라인
+      onDelete: () async {
+        Navigator.pop(context);
+        
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('장소 삭제'),
+            content: Text('${place.placeName}을(를) 삭제하시겠습니까?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('취소'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                child: const Text('삭제'),
+              ),
+            ],
+          ),
+        );
+        
+        if (confirm == true && mounted) {
+          final placesProvider = context.read<PersonalPlacesProvider>();
+          final success = await placesProvider.deletePlace(
+            place.id,
+            widget.userId,
+          );
+          
+          if (success && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('✅ 장소가 삭제되었습니다')),
+            );
+            
+            // 마커 업데이트
+            if (_isMobile && _mapLibreController != null) {
+              final locProvider = context.read<LocationsProvider>();
+              await _updateMapLibreMarkers(locProvider);
+            }
+          }
+        }
+      },
+    );
+  }
+
+  // ============================================
+  // ✅ 개인 장소 목록 BottomSheet
+  // ============================================
+  void _showPersonalPlacesListBottomSheet(List<PersonalPlaceModel> places) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (BuildContext context, StateSetter setModalState) {
+          return Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.7,
+            ),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              children: [
+                // 헤더
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: const BoxDecoration(
+                    color: Colors.green,
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '내 장소',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            '${places.length}개 장소',
+                            style: const TextStyle(
+                              color: Colors.amber,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                ),
+                
+                // 장소 목록
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: places.length,
+                    itemBuilder: (context, index) {
+                      final place = places[index];
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.green,
+                            child: Text(
+                              place.placeName[0].toUpperCase(),
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ),
+                          title: Text(place.placeName),
+                          subtitle: Text(place.category),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _showPersonalPlaceInfo(place);
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ============================================
   // ✅ 샵 목록 BottomSheet - 유저 클러스터처럼 각 샵 선택 가능하도록 개선
   // ============================================
   void _showShopsListBottomSheet(List<ShopModel> shops) {
@@ -446,141 +1173,387 @@ class _MapPageState extends State<MapPage> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => Container(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.7,
-        ),
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: Column(
-          children: [
-            // ✅ 헤더
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: const BoxDecoration(
-                color: Colors.deepPurple,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+      builder: (context) => StatefulBuilder(
+        builder: (BuildContext context, StateSetter setModalState) {
+          return Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.8,
+            ),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              children: [
+                // 헤더
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: const BoxDecoration(
+                    color: Colors.deepPurple,
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
-                        '이 위치의 가게',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '이 위치의 가게',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            '${shops.length}개 가게',
+                            style: const TextStyle(
+                              color: Colors.amber,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
                       ),
-                      Text(
-                        '${shops.length}개 가게',
-                        style: const TextStyle(
-                          color: Colors.amber,
-                          fontSize: 14,
-                        ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white),
+                        onPressed: () => Navigator.pop(context),
                       ),
                     ],
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-            ),
-            
-            // ✅ 샵 목록 - 각 샵마다 길찾기 + 상세 버튼
-            Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.all(12),
-                itemCount: shops.length,
-                itemBuilder: (context, index) {
-                  final shop = shops[index];
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    elevation: 2,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
-                      children: [
-                        ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: Colors.deepPurple,
-                            child: Text(
-                              shop.shopName[0].toUpperCase(),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          title: Text(
-                            shop.shopName,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                          subtitle: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(shop.category),
-                              Text(
-                                shop.address,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                            ],
-                          ),
+                ),
+                
+                // 샵 목록
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: shops.length,
+                    itemBuilder: (context, index) {
+                      final shop = shops[index];
+                      
+                      // ✅ 샵별 기본값 설정
+                      final currentMode = _shopTransportModeMap[shop.shopId] ?? TransportMode.driving;
+                      final currentHighway = _useHighwaysMap[shop.shopId] ?? false;
+                      
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        // ✅ 길찾기 + 상세 버튼
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: () {
-                                    debugPrint('🗺️ 길찾기 버튼 클릭: ${shop.shopName}');
-                                    Navigator.pop(context);
-                                    _navigateToShop(shop, null);
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.deepPurple,
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Column(
+                          children: [
+                            ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor: Colors.deepPurple,
+                                child: Text(
+                                  shop.shopName[0].toUpperCase(),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
                                   ),
-                                  icon: const Icon(Icons.navigation, size: 18),
-                                  label: const Text('길찾기'),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              ElevatedButton.icon(
-                                onPressed: () {
-                                  debugPrint('ℹ️ 상세 정보 버튼 클릭: ${shop.shopName}');
-                                  Navigator.pop(context);
-                                  _showShopInfo(shop);
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.grey[600],
-                                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                              title: Text(
+                                shop.shopName,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
                                 ),
-                                icon: const Icon(Icons.info_outline, size: 18),
-                                label: const Text('상세'),
                               ),
-                            ],
-                          ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(shop.category),
+                                  Text(
+                                    shop.address,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            
+                            // ✅ 이동수단 선택 (샵별 독립)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    '이동 수단',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: _buildCompactTransportButton(
+                                          icon: Icons.directions_car,
+                                          label: '자동차',
+                                          isSelected: currentMode == TransportMode.driving,
+                                          onTap: () {
+                                            setModalState(() {
+                                              _shopTransportModeMap[shop.shopId] = TransportMode.driving;
+                                            });
+                                            setState(() {
+                                              _shopTransportModeMap[shop.shopId] = TransportMode.driving;
+                                            });
+                                          },
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: _buildCompactTransportButton(
+                                          icon: Icons.directions_walk,
+                                          label: '도보',
+                                          isSelected: currentMode == TransportMode.walking,
+                                          onTap: () {
+                                            setModalState(() {
+                                              _shopTransportModeMap[shop.shopId] = TransportMode.walking;
+                                            });
+                                            setState(() {
+                                              _shopTransportModeMap[shop.shopId] = TransportMode.walking;
+                                            });
+                                          },
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: _buildCompactTransportButton(
+                                          icon: Icons.directions_bike,
+                                          label: '자전거',
+                                          isSelected: currentMode == TransportMode.cycling,
+                                          onTap: () {
+                                            setModalState(() {
+                                              _shopTransportModeMap[shop.shopId] = TransportMode.cycling;
+                                            });
+                                            setState(() {
+                                              _shopTransportModeMap[shop.shopId] = TransportMode.cycling;
+                                            });
+                                          },
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            
+                            // ✅ 자동차 모드일 때만 고속도로 옵션 표시 (샵별 독립)
+                            if (currentMode == TransportMode.driving)
+                              Container(
+                                margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[100],
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.grey[300]!),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.settings, size: 18, color: Colors.grey[700]),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      currentHighway ? '빠른 경로' : '최단 경로',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: currentHighway ? Colors.deepPurple : Colors.grey[700],
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    Switch(
+                                      value: currentHighway,
+                                      onChanged: (value) {
+                                        setModalState(() {
+                                          _useHighwaysMap[shop.shopId] = value;
+                                        });
+                                        setState(() {
+                                          _useHighwaysMap[shop.shopId] = value;
+                                        });
+                                      },
+                                      activeColor: Colors.deepPurple,
+                                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            
+                            // ✅ 설명 텍스트
+                            if (currentMode == TransportMode.driving)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 12, right: 12, bottom: 8),
+                                child: Text(
+                                  currentHighway
+                                    ? '🚗 고속도로를 이용한 빠른 경로로 안내합니다' 
+                                    : '📍 일반 도로로 최단 거리를 안내합니다',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: currentHighway ? Colors.deepPurple[700] : Colors.grey[600],
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                              ),
+                            
+                            // ✅ 길찾기 + 상세 버튼
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: ElevatedButton.icon(
+                                      onPressed: () async {
+                                        debugPrint('🗺️ 길찾기 버튼 클릭: ${shop.shopName}');
+                                        
+                                        // ✅ 이 샵의 설정 가져오기
+                                        final transportMode = _shopTransportModeMap[shop.shopId] ?? TransportMode.driving;
+                                        final useHighways = _useHighwaysMap[shop.shopId] ?? false;
+                                        
+                                        debugPrint('🚗 이동수단: $transportMode');
+                                        debugPrint('🛣️ 고속도로 옵션: $useHighways');
+                                        
+                                        Navigator.pop(context);
+                                        
+                                        // ✅ 전역 변수 업데이트 (길찾기 실행 전)
+                                        setState(() {
+                                          _selectedTransportMode = transportMode;
+                                        });
+                                        
+                                        // ✅ 길찾기 실행
+                                        final provider = context.read<LocationsProvider>();
+                                        final myLocation = provider.locations[widget.userId];
+                                        
+                                        if (myLocation == null) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(content: Text('현재 위치를 확인할 수 없습니다')),
+                                          );
+                                          return;
+                                        }
+                                        
+                                        try {
+                                          final navigationService = NavigationService();
+                                          final route = await navigationService.getRoute(
+                                            start: latlong.LatLng(myLocation.lat, myLocation.lng),
+                                            end: latlong.LatLng(shop.lat, shop.lng),
+                                            mode: transportMode, // ✅ 샵별 이동수단
+                                            useHighways: useHighways, // ✅ 샵별 고속도로 옵션
+                                          );
+                                          
+                                          if (route == null) {
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(content: Text('❌ 경로를 찾을 수 없습니다')),
+                                              );
+                                            }
+                                            return;
+                                          }
+                                          
+                                          debugPrint('✅ 경로 생성 성공');
+                                          debugPrint('   거리: ${route.formattedDistance}');
+                                          debugPrint('   시간: ${route.formattedDuration}');
+                                          
+                                          if (mounted) {
+                                            setState(() {
+                                              _currentRoute = route;
+                                            });
+                                          }
+                                          
+                                          // 지도에 경로 표시
+                                          if (_isDesktop) {
+                                            _showRouteOnFlutterMap(route, shop);
+                                          } else {
+                                            await _showRouteOnMapLibre(route, shop);
+                                          }
+                                          
+                                          // ✅ 네비게이션 패널 표시 (이동수단 선택 생략)
+                                          if (mounted) {
+                                            _showNavigationPanelSimplified(shop, route);
+                                          }
+                                          
+                                        } catch (e) {
+                                          debugPrint('❌ 길찾기 오류: $e');
+                                        }
+                                      },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.deepPurple,
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                      ),
+                                      icon: const Icon(Icons.navigation, size: 18),
+                                      label: const Text('길찾기'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  ElevatedButton.icon(
+                                    onPressed: () {
+                                      debugPrint('ℹ️ 상세 정보 버튼 클릭: ${shop.shopName}');
+                                      Navigator.pop(context);
+                                      _showShopInfo(shop);
+                                    },
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.grey[600],
+                                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                    ),
+                                    icon: const Icon(Icons.info_outline, size: 18),
+                                    label: const Text('상세'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  );
-                },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ✅ 컴팩트한 이동수단 버튼 위젯
+  Widget _buildCompactTransportButton({
+    required IconData icon,
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.deepPurple[50] : Colors.white,
+          border: Border.all(
+            color: isSelected ? Colors.deepPurple : Colors.grey[300]!,
+            width: isSelected ? 2 : 1,
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 20,
+              color: isSelected ? Colors.deepPurple : Colors.grey[600],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                color: isSelected ? Colors.deepPurple : Colors.grey[700],
               ),
             ),
           ],
@@ -695,8 +1668,8 @@ class _MapPageState extends State<MapPage> {
   }
   
   // ✅ 4. 샵 주인 페이지로 이동
-  void _openShopOwnerPage() {
-    Navigator.push(
+  void _openShopOwnerPage() async {
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ChangeNotifierProvider(
@@ -705,79 +1678,181 @@ class _MapPageState extends State<MapPage> {
         ),
       ),
     );
-  }
-  
-  // ✅ 3. 길찾기 실행 (개선된 버전 - 이동수단 고려)
-  Future<void> _navigateToShop(ShopModel shop, ShopMessageModel? message) async {
-    final provider = context.read<LocationsProvider>();
-    final myLocation = provider.locations[widget.userId];
     
-    if (myLocation == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('현재 위치를 확인할 수 없습니다')),
-      );
-      return;
-    }
-    
-    try {
-      debugPrint('');
-      debugPrint('🗺️ ════════════════════ _navigateToShop 호출됨 ════════════════════');
-      debugPrint('🏪 가게: ${shop.shopName}');
-      // ✅ toOSRMProfile() 대신 문자열로 직접 표시
-      debugPrint('🚗 현재 선택된 이동수단: ${_selectedTransportMode == TransportMode.driving ? 'driving' : _selectedTransportMode == TransportMode.walking ? 'walking' : 'cycling'}');
+    // ✅ 돌아올 때 처리
+    if (result != null && result is Map) {
+      final action = result['action'];
       
-      // ✅ 현재 선택된 이동수단으로 경로 생성
-      final navigationService = NavigationService();
-      final route = await navigationService.getRoute(
-        start: latlong.LatLng(myLocation.lat, myLocation.lng),
-        end: latlong.LatLng(shop.lat, shop.lng),
-        mode: _selectedTransportMode, // ✅ 선택된 이동수단 사용
-      );
-      
-      if (route == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('❌ 경로를 찾을 수 없습니다')),
+      if (action == 'view_location') {
+        // ✅ 위치 보기만 (길찾기 없음)
+        final lat = result['lat'] as double;
+        final lng = result['lng'] as double;
+        final userId = result['userId'] as String;
+        
+        debugPrint('');
+        debugPrint('👁️ ════════════════════ 수락자 위치로 이동 ════════════════════');
+        debugPrint('👤 사용자: $userId');
+        debugPrint('📍 위치: ($lat, $lng)');
+        
+        // ✅ 지도 이동만 (경로 생성 없음)
+        if (_isDesktop) {
+          _mapController.move(latlong.LatLng(lat, lng), 17.0);
+        } else if (_mapLibreController != null) {
+          await _mapLibreController!.animateCamera(
+            CameraUpdate.newLatLngZoom(
+              LatLng(lat, lng),
+              17.0,
+            ),
+            duration: const Duration(milliseconds: 1000),
           );
         }
+        
+        debugPrint('✅ 지도 이동 완료');
+        debugPrint('👁️ ════════════════════════════════════════════════════════');
+        debugPrint('');
+        
+        // ✅ 간단한 마커 표시 (선택사항)
+        if (_mapLibreController != null) {
+          try {
+            await _mapLibreController!.addSymbol(
+              SymbolOptions(
+                geometry: LatLng(lat, lng),
+                iconImage: 'circle_blue',
+                iconSize: 1.5,
+                iconAnchor: 'center',
+              ),
+            );
+            debugPrint('✅ 마커 추가 완료');
+          } catch (e) {
+            debugPrint('⚠️ 마커 추가 실패: $e');
+          }
+        }
+      }
+    }
+  }
+  
+  // ✅ 3. 길찾기 실행 (샵별 이동수단 + 고속도로 옵션 사용)
+  Future<void> _navigateToShop(ShopModel shop, ShopMessageModel? message) async {
+    debugPrint('');
+    debugPrint('🗺️ ════════════════════ _navigateToShop 시작 ════════════════════');
+    debugPrint('📦 샵: ${shop.shopName}');
+    debugPrint('📨 메시지: ${message?.message}');
+    
+    if (message != null) {
+      debugPrint('✅ 홍보 메시지 처리');
+      
+      // ✅ 안정화 대기
+      await Future.delayed(const Duration(milliseconds: 200));
+      debugPrint('✅ 200ms 대기 완료');
+      
+      if (!mounted) {
+        debugPrint('⚠️ Widget disposed after delay');
         return;
       }
       
-      debugPrint('✅ 경로 생성 성공');
-      debugPrint('   이동수단: ${route.transportModeString}');
-      debugPrint('   거리: ${route.formattedDistance}');
-      debugPrint('   시간: ${route.formattedDuration}');
+      debugPrint('✅ mounted 확인');
+      debugPrint('🔧 _showNavigationBottomSheet 호출 시작');
       
-      // ✅ setState로 경로 업데이트
-      if (mounted) {
-        setState(() {
-          _currentRoute = route;
-        });
-        debugPrint('✅ setState 호출 - 경로 업데이트');
-      }
+      _showNavigationBottomSheet(
+        entityId: shop.shopId,
+        entityName: shop.shopName,
+        subtitle: shop.category,
+        lat: shop.lat,
+        lng: shop.lng,
+        headerColor: Colors.deepPurple,
+        icon: Icons.store,
+        additionalInfo: [
+          _buildInfoRow(Icons.location_on, '주소', shop.address),
+          const SizedBox(height: 8),
+          _buildInfoRow(Icons.phone, '전화', shop.phone),
+          if (shop.description.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _buildInfoRow(Icons.description, '설명', shop.description),
+          ],
+          // ✅ 홍보 메시지 내용 표시
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.amber[50],
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.amber[200]!, width: 2),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.campaign, color: Colors.orange, size: 22),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '홍보 메시지',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.orange,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        message.message,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
       
-      // 지도에 경로 표시
-      if (_isDesktop) {
-        _showRouteOnFlutterMap(route, shop);
-      } else {
-        await _showRouteOnMapLibre(route, shop);
-      }
-      
-      // ✅ 네비게이션 패널 표시
-      if (mounted) {
-        _showNavigationPanel(shop, route);
-      }
-      
+      debugPrint('✅ _showNavigationBottomSheet 호출 완료');
       debugPrint('🗺️ ════════════════════ _navigateToShop 완료 ════════════════════');
       debugPrint('');
       
-    } catch (e) {
-      debugPrint('❌ _navigateToShop 오류: $e');
+      return;
     }
+    
+    // 일반 샵 클릭
+    debugPrint('✅ 일반 샵 처리');
+    
+    _showNavigationBottomSheet(
+      entityId: shop.shopId,
+      entityName: shop.shopName,
+      subtitle: shop.category,
+      lat: shop.lat,
+      lng: shop.lng,
+      headerColor: Colors.deepPurple,
+      icon: Icons.store,
+      additionalInfo: [
+        _buildInfoRow(Icons.location_on, '주소', shop.address),
+        const SizedBox(height: 8),
+        _buildInfoRow(Icons.phone, '전화', shop.phone),
+        if (shop.description.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          _buildInfoRow(Icons.description, '설명', shop.description),
+        ],
+      ],
+    );
+    
+    debugPrint('🗺️ ════════════════════ _navigateToShop 완료 ════════════════════');
+    debugPrint('');
   }
   
   // ✅ 4. FlutterMap에 경로 표시
   void _showRouteOnFlutterMap(RouteResult route, ShopModel? shop) {
+    // ✅ 함수 시작 시 mounted 체크
+    if (!mounted) {
+      debugPrint('⚠️ _showRouteOnFlutterMap: Widget not mounted');
+      return;
+    }
+    
     debugPrint('');
     debugPrint('🗺️ ════════════════════ FlutterMap 경로 표시 ════════════════════');
     debugPrint('   경로 포인트: ${route.coordinates.length}개');
@@ -790,12 +1865,14 @@ class _MapPageState extends State<MapPage> {
     debugPrint('🗺️ ════════════════════════════════════════════════════════');
     debugPrint('');
     
-    // ✅ setState로 지도를 다시 그림
+    // ✅ setState 전에 한 번 더 체크
+    if (!mounted) return;
+    
     setState(() {
       _currentRoute = route;
     });
     
-    // ✅ 맵 컨트롤러로 경로 중심 이동
+    // 지도 이동
     if (route.coordinates.isNotEmpty) {
       final centerLat = route.coordinates
           .map((p) => p.latitude)
@@ -823,7 +1900,13 @@ class _MapPageState extends State<MapPage> {
         final List<Marker> shopMarkers = _showShopsLayer
             ? _buildFlutterMapShopClusters(shopsProvider.filteredShops)
             : <Marker>[];
-        
+      // ✅ 개인 장소 마커 생성 추가
+      return Consumer<PersonalPlacesProvider>(
+        builder: (context, placesProvider, _) {
+          final List<Marker> placeMarkers = _showPersonalPlacesLayer
+              ? _buildFlutterMapPersonalPlaceClusters(placesProvider.filteredPlaces)
+              : <Marker>[];
+
         return FutureBuilder<List<LocationModel>>(
           future: _filterLocationsByGroup(allLocs),
           builder: (context, snapshot) {
@@ -907,14 +1990,22 @@ class _MapPageState extends State<MapPage> {
                   polylines: [
                     Polyline(
                       points: _currentRoute!.coordinates,
-                      color: Colors.blue,
-                      strokeWidth: 4.0,
+                      color: Colors.blue.withOpacity(0.7),
+                      strokeWidth: 5.0,
                     ),
                   ],
                 ),
               );
               
-              // 시작점 마커
+              // ✅ 화살표 마커 추가
+              final arrowMarkers = _buildArrowMarkers(_currentRoute!.coordinates);
+              if (arrowMarkers.isNotEmpty) {
+                routeLayers.add(
+                  MarkerLayer(markers: arrowMarkers),
+                );
+              }
+              
+              // 시작점/도착점 마커
               routeLayers.add(
                 MarkerLayer(
                   markers: [
@@ -923,9 +2014,16 @@ class _MapPageState extends State<MapPage> {
                       width: 40,
                       height: 40,
                       child: Container(
-                        decoration: const BoxDecoration(
+                        decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           color: Colors.green,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
                         ),
                         child: const Icon(
                           Icons.location_on,
@@ -940,9 +2038,16 @@ class _MapPageState extends State<MapPage> {
                       width: 40,
                       height: 40,
                       child: Container(
-                        decoration: const BoxDecoration(
+                        decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           color: Colors.red,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
                         ),
                         child: const Icon(
                           Icons.location_on,
@@ -973,6 +2078,16 @@ class _MapPageState extends State<MapPage> {
                     ),
                     // ✅ 경로 레이어 추가 (사용자 마커 전에)
                     ...routeLayers,
+                    
+                    // ✅ 선택된 instruction 마커
+                    if (_selectedInstructionMarkerFlutter != null)
+                      MarkerLayer(
+                        markers: [_selectedInstructionMarkerFlutter!],
+                      ),
+                    
+                    // ✅ 개인 장소 마커 레이어 추가
+                    if (_showPersonalPlacesLayer)
+                      MarkerLayer(markers: placeMarkers),
                     
                     // 샵 마커 레이어
                     if (_showShopsLayer)
@@ -1008,9 +2123,256 @@ class _MapPageState extends State<MapPage> {
               ],
             );
           },
-        );
+        );});
       },
     );
+  }
+
+  // ✅ 간소화된 네비게이션 패널 (이동수단 선택 생략)
+  void _showNavigationPanelSimplified(ShopModel shop, RouteResult route) {
+    showModalBottomSheet(
+      context: context,
+      isDismissible: false,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 헤더
+            Row(
+              children: [
+                const Icon(Icons.navigation, color: Colors.blue, size: 30),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        shop.shopName,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        '${route.formattedDistance} · ${route.formattedDuration}',
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    setState(() => _currentRoute = null);
+                  },
+                ),
+              ],
+            ),
+            
+            const Divider(),
+            const SizedBox(height: 12),
+            
+            // ✅ 안내 시작 버튼
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  debugPrint('');
+                  debugPrint('🚀 ════════════════════ 길찾기 시작 ════════════════════');
+                  debugPrint('   목적지: ${shop.shopName}');
+                  debugPrint('   이동 수단: ${route.transportModeString}');
+                  debugPrint('   거리: ${route.formattedDistance}');
+                  debugPrint('   시간: ${route.formattedDuration}');
+                  debugPrint('   안내 스텝: ${route.instructions.length}개');
+                  debugPrint('🚀 ════════════════════════════════════════════════');
+                  
+                  if (mounted) {
+                    setState(() {
+                      _currentInstructions = route.instructions;
+                    });
+                    debugPrint('✅ setState 완료: _currentInstructions = ${route.instructions.length}개');
+                  }
+                  
+                  Navigator.pop(context);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                icon: const Icon(Icons.play_arrow, size: 24),
+                label: const Text(
+                  '안내 시작',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ============================================
+  // ✅ FlutterMap용 개인 장소 클러스터 마커 생성
+  // ============================================
+  List<Marker> _buildFlutterMapPersonalPlaceClusters(List<PersonalPlaceModel> places) {
+    if (places.isEmpty) return [];
+    
+    final List<Marker> markers = [];
+    final placeClusters = _clusterPersonalPlaces(places);
+    
+    //debugPrint('🗺️ Desktop 개인 장소 클러스터: ${placeClusters.length}개');
+    
+    for (final cluster in placeClusters) {
+      if (cluster.length == 1) {
+        // 단일 장소
+        final place = cluster[0];
+        markers.add(
+          Marker(
+            key: ValueKey('place_${place.id}'),
+            point: latlong.LatLng(place.lat, place.lng),
+            width: 120,
+            height: 140,
+            child: GestureDetector(
+              onTap: () => _showPersonalPlaceInfo(place),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.green,
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 6,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          place.placeName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          place.category,
+                          style: const TextStyle(
+                            color: Colors.amber,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Icon(
+                    Icons.bookmark,
+                    color: Colors.green,
+                    size: 26,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      } else {
+        // 장소 클러스터
+        double sumLat = 0, sumLng = 0;
+        for (final place in cluster) {
+          sumLat += place.lat;
+          sumLng += place.lng;
+        }
+        final centerLat = sumLat / cluster.length;
+        final centerLng = sumLng / cluster.length;
+        
+        markers.add(
+          Marker(
+            key: ValueKey('place_cluster_${cluster.hashCode}'),
+            point: latlong.LatLng(centerLat, centerLng),
+            width: 140,
+            height: 160,
+            child: GestureDetector(
+              onTap: () => _showPersonalPlacesListBottomSheet(cluster),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.teal,
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    padding: const EdgeInsets.all(8),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          '내 장소',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          '${cluster.length}개',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          cluster.take(3).map((p) => p.placeName).join(', '),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 9,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Icon(
+                    Icons.bookmark,
+                    color: Colors.teal,
+                    size: 26,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+    }
+    
+    //debugPrint('✅ Desktop 개인 장소 마커 ${markers.length}개 생성 완료');
+    return markers;
   }
 
   // ✅ 5. MapLibre에 경로 표시
@@ -1347,7 +2709,9 @@ class _MapPageState extends State<MapPage> {
                 const Icon(Icons.navigation, color: Colors.white, size: 18),
                 const SizedBox(width: 8),
                 Text(
-                  '${_currentInstructions.length}개 스텝',
+                  _navLanguage == NavigationLanguage.korean
+                      ? '${_currentInstructions.length}개 스텝'
+                      : '${_currentInstructions.length} Steps',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 14,
@@ -1361,321 +2725,467 @@ class _MapPageState extends State<MapPage> {
       );
     }
 
-    // ✅ 전체 패널 표시
-    return Positioned(
-      bottom: 18,
-      left: 18,
-      child: Container(
-        width: 320,
-        height: 420,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              // ignore: deprecated_member_use
-              color: Colors.black.withOpacity(0.2),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
+  // ✅ 전체 패널 표시
+  return Positioned(
+    bottom: 18,
+    left: 18,
+    child: Container(
+      width: 320,
+      height: 420,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            // ignore: deprecated_member_use
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          // ✅ 헤더 (언어 선택 버튼 추가)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.blue,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
             ),
-          ],
-        ),
-        child: Column(
-          children: [
-            // ✅ 헤더 (종료 alert + 최소화 버튼)
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.blue,
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '경로 안내',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
+            child: Column(
+              children: [
+                // ✅ 첫 번째 줄: 제목 + 버튼들
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // 제목
+                    Text(
+                      _navLanguage == NavigationLanguage.korean
+                          ? '경로 안내'
+                          : 'Navigation',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
                       ),
-                      Text(
-                        '${_currentInstructions.length}개 스텝',
-                        style: const TextStyle(
-                          color: Colors.lightBlueAccent,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      // ✅ 최소화 버튼 (_)
-                      IconButton(
-                        icon: const Icon(Icons.minimize, color: Colors.white, size: 20),
-                        onPressed: () {
-                          setState(() {
-                            _isInstructionPanelMinimized = true;
-                          });
-                        },
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        tooltip: '최소화',
-                      ),
-                      const SizedBox(width: 4),
-                      // ✅ 종료 버튼 (X)
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white, size: 20),
-                        onPressed: () {
-                          // ✅ Alert 띄우기
-                          showDialog(
-                            context: context,
-                            builder: (BuildContext dialogContext) {
-                              return AlertDialog(
-                                title: const Text('길찾기 종료'),
-                                content: const Text('길찾기를 종료하시겠습니까?'),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () {
-                                      Navigator.pop(dialogContext);
-                                    },
-                                    child: const Text('취소'),
-                                  ),
-                                  TextButton(
-                                    onPressed: () {
-                                      Navigator.pop(dialogContext);
-                                      
-                                      // ✅ 상태 초기화
-                                      setState(() {
-                                        _currentInstructions = [];
-                                        _selectedInstructionIndex = null;
-                                        _currentRoute = null;
-                                        
-                                        // 선택된 마커 제거
-                                        if (_selectedInstructionMarker != null && _mapLibreController != null) {
-                                          try {
-                                            _mapLibreController!.removeSymbol(_selectedInstructionMarker!);
-                                          } catch (e) {
-                                            debugPrint('⚠️ 마커 제거 실패: $e');
-                                          }
-                                          _selectedInstructionMarker = null;
-                                        }
-                                      });
-                                      
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('길찾기가 종료되었습니다'),
-                                          duration: Duration(seconds: 2),
-                                        ),
-                                      );
-                                    },
-                                    style: TextButton.styleFrom(
-                                      foregroundColor: Colors.red,
-                                    ),
-                                    child: const Text('종료'),
-                                  ),
-                                ],
-                              );
-                            },
-                          );
-                        },
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                        tooltip: '길찾기 종료',
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-
-            // ✅ 스텝 리스트 (스크롤 가능)
-            Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.all(8),
-                itemCount: _currentInstructions.length,
-                itemBuilder: (context, index) {
-                  final instruction = _currentInstructions[index];
-                  final isSelected = _selectedInstructionIndex == index;
-
-                  // ✅ 수정: NavigationStep의 getter 직접 사용
-                  final detailedInstruction = instruction.fullDescription;
-                  final formattedDistance = instruction.formattedDistance;
-                  final duration = instruction.duration ?? 0;
-
-                  return GestureDetector(
-                    onTap: () async {
-                      setState(() {
-                        _selectedInstructionIndex = index;
-                      });
-
-                      // 이전 마커 제거
-                      if (_selectedInstructionMarker != null && _mapLibreController != null) {
-                        try {
-                          await _mapLibreController!.removeSymbol(_selectedInstructionMarker!);
-                        } catch (e) {
-                          debugPrint('⚠️ 이전 마커 제거 실패: $e');
-                        }
-                      }
-
-                      final stepLocation = instruction.location;
-
-                      debugPrint('');
-                      debugPrint('📍 ════════════════════ 스텝 마커 추가 ════════════════════');
-                      debugPrint('   스텝: ${index + 1}/${_currentInstructions.length}');
-                      debugPrint('   안내: $detailedInstruction');
-                      debugPrint('   거리: $formattedDistance');
-                      debugPrint('   실제 좌표: (${stepLocation.latitude.toStringAsFixed(6)}, ${stepLocation.longitude.toStringAsFixed(6)})');
-
-                      // Desktop과 Mobile 처리
-                      if (_isDesktop) {
-                        try {
-                          debugPrint('📍 Desktop에서 위치 이동: (${stepLocation.latitude}, ${stepLocation.longitude})');
-
-                          _mapController.move(
-                            latlong.LatLng(stepLocation.latitude, stepLocation.longitude),
-                            17.0,
-                          );
-                          
-                          setState(() {
-                            _selectedInstructionIndex = index;
-                          });
-                          
-                          debugPrint('✅ Desktop 카메라 이동 완료');
-                        } catch (e) {
-                          debugPrint('❌ Desktop 이동 실패: $e');
-                        }
-                      } else if (_mapLibreController != null) {
-                        try {
-                          if (!_iconsRegistered) {
-                            await _registerCustomIcons();
-                          }
-                          
-                          _selectedInstructionMarker = await _mapLibreController!.addSymbol(
-                            SymbolOptions(
-                              geometry: LatLng(stepLocation.latitude, stepLocation.longitude),
-                              iconImage: 'circle_red',
-                              iconSize: 1.5,
-                              iconAnchor: 'center',
-                            ),
-                          );
-
-                          debugPrint('✅ 빨간 마커 추가 완료: ${_selectedInstructionMarker!.id}');
-
-                          await _mapLibreController!.animateCamera(
-                            CameraUpdate.newLatLngZoom(
-                              LatLng(stepLocation.latitude, stepLocation.longitude),
-                              17.0,
-                            ),
-                            duration: const Duration(milliseconds: 800),
-                          );
-
-                          debugPrint('📍 ════════════════════════════════════════════════');
-                          debugPrint('');
-                        } catch (e) {
-                          debugPrint('❌ 마커 추가 실패: $e');
-                        }
-                      }
-                    },
-                    child: Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: isSelected ? Colors.blue[100] : Colors.grey[100],
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: isSelected ? Colors.blue : Colors.grey[300]!,
-                          width: isSelected ? 2 : 1,
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                width: 28,
-                                height: 28,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: isSelected ? Colors.blue : Colors.grey[400],
-                                ),
-                                child: Center(
-                                  child: Text(
-                                    '${index + 1}',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  detailedInstruction,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                    color: isSelected ? Colors.blue[700] : Colors.black87,
-                                  ),
-                                ),
-                              ),
-                            ],
+                    ),
+                    Row(
+                      children: [
+                        // ✅ 언어 변경 버튼
+                        IconButton(
+                          icon: Icon(
+                            _navLanguage == NavigationLanguage.korean
+                                ? Icons.language
+                                : Icons.g_translate,
+                            color: Colors.white,
+                            size: 20,
                           ),
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              Icon(
-                                Icons.location_on,
-                                size: 12,
-                                color: Colors.grey[600],
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                formattedDistance,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w500,
-                                  color: Colors.grey[700],
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Icon(
-                                Icons.schedule,
-                                size: 12,
-                                color: Colors.grey[600],
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                duration > 0 ? '${(duration / 60).toStringAsFixed(0)}분' : '-',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w500,
-                                  color: Colors.grey[700],
-                                ),
-                              ),
-                            ],
+                          onPressed: () {
+                            setState(() {
+                              _navLanguage = _navLanguage == NavigationLanguage.korean
+                                  ? NavigationLanguage.english
+                                  : NavigationLanguage.korean;
+                            });
+                          },
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          tooltip: _navLanguage == NavigationLanguage.korean
+                              ? 'English'
+                              : '한국어',
+                        ),
+                        const SizedBox(width: 4),
+                        // ✅ 최소화 버튼
+                        IconButton(
+                          icon: const Icon(Icons.minimize, color: Colors.white, size: 20),
+                          onPressed: () {
+                            setState(() {
+                              _isInstructionPanelMinimized = true;
+                            });
+                          },
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          tooltip: _navLanguage == NavigationLanguage.korean ? '최소화' : 'Minimize',
+                        ),
+                        const SizedBox(width: 4),
+                        // ✅ 종료 버튼
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white, size: 20),
+                          onPressed: () {
+                            showDialog(
+                              context: context,
+                              builder: (BuildContext dialogContext) {
+                                return AlertDialog(
+                                  title: Text(
+                                    _navLanguage == NavigationLanguage.korean
+                                        ? '길찾기 종료'
+                                        : 'End Navigation',
+                                  ),
+                                  content: Text(
+                                    _navLanguage == NavigationLanguage.korean
+                                        ? '길찾기를 종료하시겠습니까?'
+                                        : 'Do you want to end navigation?',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () {
+                                        Navigator.pop(dialogContext);
+                                      },
+                                      child: Text(
+                                        _navLanguage == NavigationLanguage.korean
+                                            ? '취소'
+                                            : 'Cancel',
+                                      ),
+                                    ),
+                                    TextButton(
+                                      onPressed: () {
+                                        Navigator.pop(dialogContext);
+                                        setState(() {
+                                          _currentInstructions = [];
+                                          _selectedInstructionIndex = null;
+                                          _currentRoute = null;
+                                          
+                                          if (_selectedInstructionMarker != null && _mapLibreController != null) {
+                                            try {
+                                              _mapLibreController!.removeSymbol(_selectedInstructionMarker!);
+                                            } catch (e) {
+                                              debugPrint('⚠️ 마커 제거 실패: $e');
+                                            }
+                                            _selectedInstructionMarker = null;
+                                          }
+                                        });
+                                        
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              _navLanguage == NavigationLanguage.korean
+                                                  ? '길찾기가 종료되었습니다'
+                                                  : 'Navigation ended',
+                                            ),
+                                            duration: const Duration(seconds: 2),
+                                          ),
+                                        );
+                                      },
+                                      style: TextButton.styleFrom(
+                                        foregroundColor: Colors.red,
+                                      ),
+                                      child: Text(
+                                        _navLanguage == NavigationLanguage.korean
+                                            ? '종료'
+                                            : 'End',
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              },
+                            );
+                          },
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          tooltip: _navLanguage == NavigationLanguage.korean ? '종료' : 'Close',
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                
+                // ✅ 두 번째 줄: 전체 거리 + 시간 + 스텝 수
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      // 전체 거리
+                      Row(
+                        children: [
+                          const Icon(Icons.straighten, color: Colors.white70, size: 16),
+                          const SizedBox(width: 4),
+                          Text(
+                            _currentRoute!.formattedDistance,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ],
                       ),
-                    ),
-                  );
-                },
-              ),
+                      // 구분선
+                      Container(
+                        height: 16,
+                        width: 1,
+                        color: Colors.white30,
+                      ),
+                      // 전체 시간
+                      Row(
+                        children: [
+                          const Icon(Icons.schedule, color: Colors.white70, size: 16),
+                          const SizedBox(width: 4),
+                          Text(
+                            _currentRoute!.formattedDuration,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                      // 구분선
+                      Container(
+                        height: 16,
+                        width: 1,
+                        color: Colors.white30,
+                      ),
+                      // 스텝 수
+                      Row(
+                        children: [
+                          const Icon(Icons.list_alt, color: Colors.white70, size: 16),
+                          const SizedBox(width: 4),
+                          Text(
+                            _navLanguage == NavigationLanguage.korean
+                                ? '${_currentInstructions.length}개'
+                                : '${_currentInstructions.length}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+
+          // ✅ 스텝 리스트 (언어 반영)
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.all(8),
+              itemCount: _currentInstructions.length,
+              itemBuilder: (context, index) {
+                final instruction = _currentInstructions[index];
+                final isSelected = _selectedInstructionIndex == index;
+
+                // ✅ 언어별 설명 가져오기
+                final detailedInstruction = instruction.getFullDescription(_navLanguage);
+                final formattedDistance = instruction.formattedDistance;
+                final duration = instruction.duration ?? 0;
+
+                return GestureDetector(
+                  onTap: () async {
+                    setState(() {
+                      _selectedInstructionIndex = index;
+                    });
+
+                    if (_selectedInstructionMarker != null && _mapLibreController != null) {
+                      try {
+                        await _mapLibreController!.removeSymbol(_selectedInstructionMarker!);
+                      } catch (e) {
+                        debugPrint('⚠️ 이전 마커 제거 실패: $e');
+                      }
+                    }
+
+                    final stepLocation = instruction.location;
+
+                    if (_isDesktop) {
+                      setState(() {
+                        _selectedInstructionIndex = index;
+                        // ✅ 선택된 instruction 마커 생성
+                        _selectedInstructionMarkerFlutter = latlong.Marker(
+                          key: const ValueKey('selected_instruction'),
+                          point: latlong.LatLng(
+                            stepLocation.latitude,
+                            stepLocation.longitude,
+                          ),
+                          width: 60,
+                          height: 80,
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              // 펄스 효과 배경
+                              Container(
+                                width: 60,
+                                height: 60,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.orange.withOpacity(0.3),
+                                ),
+                              ),
+                              // 메인 마커
+                              Container(
+                                width: 45,
+                                height: 45,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.orange,
+                                  border: Border.all(
+                                    color: Colors.white,
+                                    width: 3,
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.5),
+                                      blurRadius: 12,
+                                      offset: const Offset(0, 4),
+                                    ),
+                                  ],
+                                ),
+                                child: const Icon(
+                                  Icons.navigation,
+                                  color: Colors.white,
+                                  size: 26,
+                                ),
+                              ),
+                              // 위치 표시 핀
+                              Positioned(
+                                bottom: 0,
+                                child: Container(
+                                  width: 4,
+                                  height: 20,
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange,
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      });
+                      
+                      _mapController.move(
+                        latlong.LatLng(stepLocation.latitude, stepLocation.longitude),
+                        17.0,
+                      );
+                    } else if (_mapLibreController != null) {
+                      try {
+                        if (!_iconsRegistered) {
+                          await _registerCustomIcons();
+                        }
+                        
+                        _selectedInstructionMarker = await _mapLibreController!.addSymbol(
+                          SymbolOptions(
+                            geometry: LatLng(stepLocation.latitude, stepLocation.longitude),
+                            iconImage: 'circle_red',
+                            iconSize: 1.5,
+                            iconAnchor: 'center',
+                          ),
+                        );
+
+                        await _mapLibreController!.animateCamera(
+                          CameraUpdate.newLatLngZoom(
+                            LatLng(stepLocation.latitude, stepLocation.longitude),
+                            17.0,
+                          ),
+                          duration: const Duration(milliseconds: 800),
+                        );
+                      } catch (e) {
+                        debugPrint('❌ 마커 추가 실패: $e');
+                      }
+                    }
+                  },
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: isSelected ? Colors.blue[100] : Colors.grey[100],
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isSelected ? Colors.blue : Colors.grey[300]!,
+                        width: isSelected ? 2 : 1,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            // ✅ 방향 아이콘
+                            Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: isSelected ? Colors.blue : Colors.grey[400],
+                              ),
+                              child: Icon(
+                                instruction.getDirectionIcon(),
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                detailedInstruction,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: isSelected ? Colors.blue[700] : Colors.black87,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.location_on,
+                              size: 12,
+                              color: Colors.grey[600],
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              formattedDistance,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.grey[700],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Icon(
+                              Icons.schedule,
+                              size: 12,
+                              color: Colors.grey[600],
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              duration > 0
+                                  ? _formatNavigationTime(duration, _navLanguage)
+                                  : '-',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.grey[700],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   // ✅ 이동 수단 버튼
   Widget _buildTransportModeButton({
@@ -1989,9 +3499,6 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  // ============================================
-  // ✅ 마커 업데이트 - 유저와 샵 통합 관리
-  // ============================================
   Future<void> _updateMapLibreMarkers(
     LocationsProvider provider, {
     bool isAutoUpdate = false,
@@ -2003,10 +3510,7 @@ class _MapPageState extends State<MapPage> {
     if (!isAutoUpdate) _lastManualUpdate = DateTime.now();
 
     try {
-      // debugPrint('');
-      // debugPrint('🔄 ════════════════════ 통합 마커 업데이트 시작 ════════════════════');
-      
-      // ✅ 1. 모든 기존 Symbol 제거
+      // 1. 기존 Symbol 제거
       final symbolsList = _symbols.values.toList();
       _symbols.clear();
       
@@ -2017,10 +3521,8 @@ class _MapPageState extends State<MapPage> {
           // 이미 제거된 심볼 무시
         }
       }
-      
-      //debugPrint('🧹 기존 심볼 ${symbolsList.length}개 제거 완료');
 
-      // ✅ 2. 유저 마커 클러스터링
+      // 2. 유저 마커
       final allLocs = provider.getDisplayLocations();
       final locs = await _filterLocationsByGroup(allLocs);
       
@@ -2029,7 +3531,6 @@ class _MapPageState extends State<MapPage> {
 
       if (locs.isNotEmpty) {
         final userClusters = _clusterLocations(locs);
-        debugPrint('👥 유저 클러스터: ${userClusters.length}개');
 
         for (int i = 0; i < userClusters.length; i++) {
           final cluster = userClusters[i];
@@ -2044,23 +3545,221 @@ class _MapPageState extends State<MapPage> {
         }
       }
 
-      // ✅ 3. 샵 마커 - 유저 클러스터링과 동일하게 처리
+      // 3. 샵 마커
       if (_showShopsLayer) {
-        // ignore: use_build_context_synchronously
         final shopsProvider = context.read<ShopsMapProvider>();
         await _addShopMarkersWithClustering(shopsProvider);
       }
-
-      // debugPrint('✅ 마커 업데이트 완료');
-      // debugPrint('   - 유저: 단일 ${_userMarkers.length}개, 클러스터 ${_clusterMarkers.length}개');
-      // debugPrint('   - 샵: ${_shopMarkers.length}개');
-      // debugPrint('🔄 ════════════════════ 마커 업데이트 종료 ════════════════════');
-      // debugPrint('');
+      
+      // ✅ 4. 개인 장소 마커 추가
+      if (_showPersonalPlacesLayer) {
+        try {
+          final placesProvider = context.read<PersonalPlacesProvider>();
+          await _addPersonalPlaceMarkersWithClustering(placesProvider);
+        } catch (e) {
+          debugPrint('⚠️ 개인 장소 마커 추가 실패: $e');
+        }
+      }
 
     } catch (e) {
       debugPrint('❌ 마커 업데이트 실패: $e');
     } finally {
       _isUpdatingMarkers = false;
+    }
+  }
+
+  // ============================================
+  // ✅ 개인 장소 마커 클러스터링 추가
+  // ============================================
+  Future<void> _addPersonalPlaceMarkersWithClustering(
+    PersonalPlacesProvider placesProvider,
+  ) async {
+    if (_mapLibreController == null) {
+      debugPrint('❌ MapLibre controller 없음');
+      return;
+    }
+
+    try {
+      debugPrint('');
+      debugPrint('📍 ════════════════════ 개인 장소 클러스터링 시작 ════════════════════');
+      
+      _personalPlaceMarkers.clear();
+      _personalPlaceClusterMarkers.clear();
+
+      final places = placesProvider.filteredPlaces;
+      debugPrint('📦 표시할 개인 장소: ${places.length}개');
+      
+      if (places.isEmpty) {
+        debugPrint('⚠️ 개인 장소 없음 - 전체: ${placesProvider.allPlaces.length}개');
+        debugPrint('📍 ════════════════════════════════════════════════════════');
+        debugPrint('');
+        return;
+      }
+
+      // ✅ 각 장소 정보 출력
+      for (var place in places) {
+        debugPrint('   📍 ${place.placeName} (${place.category}) - (${place.lat.toStringAsFixed(6)}, ${place.lng.toStringAsFixed(6)})');
+      }
+
+      final placeClusters = _clusterPersonalPlaces(places);
+      debugPrint('📦 개인 장소 클러스터: ${placeClusters.length}개');
+
+      for (int i = 0; i < placeClusters.length; i++) {
+        final cluster = placeClusters[i];
+        
+        if (cluster.length == 1) {
+          final place = cluster[0];
+          _personalPlaceMarkers[place.id] = place;
+          await _addSymbolSinglePersonalPlace(place);
+          debugPrint('   ✅ 단일 장소 심볼 추가: ${place.placeName}');
+        } else {
+          _personalPlaceClusterMarkers['place_cluster_$i'] = cluster;
+          await _addSymbolPersonalPlaceCluster(cluster, i);
+          debugPrint('   ✅ 장소 클러스터 $i: ${cluster.length}개');
+        }
+      }
+
+      debugPrint('✅ 최종 결과:');
+      debugPrint('   - 단일 장소: ${_personalPlaceMarkers.length}개');
+      debugPrint('   - 클러스터: ${_personalPlaceClusterMarkers.length}개');
+      debugPrint('   - 총 심볼: ${_symbols.keys.where((k) => k.startsWith('place_')).length}개');
+      debugPrint('📍 ════════════════════ 개인 장소 클러스터링 완료 ════════════════════');
+      debugPrint('');
+
+    } catch (e, stack) {
+      debugPrint('❌ 개인 장소 클러스터링 실패: $e');
+      debugPrint('Stack: $stack');
+    }
+  }
+
+  // ============================================
+  // ✅ 단일 개인 장소 심볼 추가
+  // ============================================
+  Future<void> _addSymbolSinglePersonalPlace(PersonalPlaceModel place) async {
+    if (_mapLibreController == null) return;
+    
+    if (!_iconsRegistered) {
+      await _registerCustomIcons();
+    }
+
+    try {
+      // ✅ 장소 이름 첫 글자
+      final initial = place.placeName.isNotEmpty 
+          ? place.placeName[0].toUpperCase() 
+          : 'P';
+      
+      // ✅ 개인 장소용 아이콘 동적 생성 (초록색으로 구분)
+      final iconKey = 'place_${place.id}';
+      await _registerIconWithText(iconKey, Colors.green, initial, 44);
+
+      debugPrint('🎨 개인 장소 아이콘 등록: $iconKey (${place.placeName})');
+
+      // ✅ 아이콘 추가
+      final mainSymbol = await _mapLibreController!.addSymbol(
+        SymbolOptions(
+          geometry: LatLng(place.lat, place.lng),
+          iconImage: iconKey,
+          iconSize: 1.0,
+          iconAnchor: 'center',
+        ),
+      );
+      
+      _symbols['place_${place.id}'] = mainSymbol;
+
+      // ✅ 장소 이름 라벨 추가
+      final labelSymbol = await _mapLibreController!.addSymbol(
+        SymbolOptions(
+          geometry: LatLng(place.lat, place.lng),
+          textField: _short(place.placeName, 6),
+          textSize: 11.0,
+          textColor: '#000000',
+          textHaloColor: '#FFFFFF',
+          textHaloWidth: 2.0,
+          textAnchor: 'top',
+          textOffset: const Offset(0, 1.2),
+        ),
+      );
+      _symbols['place_${place.id}_label'] = labelSymbol;
+
+    } catch (e, stack) {
+      debugPrint('❌ 개인 장소 마커 추가 실패: ${place.placeName} - $e');
+      debugPrint('Stack: $stack');
+    }
+  }
+
+  // ============================================
+  // ✅ 개인 장소 클러스터 심볼 추가
+  // ============================================
+  Future<void> _addSymbolPersonalPlaceCluster(
+    List<PersonalPlaceModel> cluster,
+    int index,
+  ) async {
+    if (_mapLibreController == null || cluster.isEmpty) return;
+    
+    if (!_iconsRegistered) {
+      await _registerCustomIcons();
+    }
+
+    try {
+      // ✅ 클러스터 중심 계산
+      double sumLat = 0, sumLng = 0;
+      for (final place in cluster) {
+        sumLat += place.lat;
+        sumLng += place.lng;
+      }
+      final centerLat = sumLat / cluster.length;
+      final centerLng = sumLng / cluster.length;
+
+      // ✅ 처음 3개 장소의 이니셜
+      final initials = <String>[];
+      for (int i = 0; i < min(3, cluster.length); i++) {
+        final initial = cluster[i].placeName.isNotEmpty 
+            ? cluster[i].placeName[0].toUpperCase() 
+            : 'P';
+        initials.add(initial);
+      }
+
+      String initialsText;
+      if (cluster.length <= 3) {
+        initialsText = initials.join(' ');
+      } else {
+        initialsText = '${initials[0]}${initials[1]}${initials[2]}';
+      }
+
+      // ✅ 클러스터 아이콘 생성 (초록색)
+      final iconKey = 'place_cluster_$index';
+      await _registerIconWithText(iconKey, Colors.teal, initialsText, 60);
+
+      // ✅ 아이콘 추가
+      final clusterSymbol = await _mapLibreController!.addSymbol(
+        SymbolOptions(
+          geometry: LatLng(centerLat, centerLng),
+          iconImage: iconKey,
+          iconSize: 1.0,
+          iconAnchor: 'center',
+        ),
+      );
+      
+      _symbols['place_cluster_$index'] = clusterSymbol;
+
+      // ✅ 개수 라벨 추가
+      final labelSymbol = await _mapLibreController!.addSymbol(
+        SymbolOptions(
+          geometry: LatLng(centerLat, centerLng),
+          textField: '${cluster.length}개',
+          textSize: 11.0,
+          textColor: '#000000',
+          textHaloColor: '#FFFFFF',
+          textHaloWidth: 2.0,
+          textAnchor: 'top',
+          textOffset: const Offset(0, 1.5),
+        ),
+      );
+      _symbols['place_cluster_${index}_label'] = labelSymbol;
+
+    } catch (e, stack) {
+      debugPrint('❌ 개인 장소 클러스터 추가 실패: $e');
+      debugPrint('Stack: $stack');
     }
   }
 
@@ -2940,38 +4639,29 @@ class _MapPageState extends State<MapPage> {
   // ============================================
   @override
   void dispose() {
-    debugPrint('');
     debugPrint('🛑 ════════════════════ MapPage dispose ════════════════════');
     
+    // ✅ 1. 타이머 정리
     _updateTimer?.cancel();
     _autoMoveTimer?.cancel();
     _durationTimer?.cancel();
     _markerUpdateTimer?.cancel();
-
-    final provider = context.read<LocationsProvider>();
-    provider.saveAllStayDurations();
     
-    try {
-      final msgProvider = context.read<UserMessageProvider>();
-      msgProvider.forceRefresh();
-      debugPrint('✅ UserMessageProvider 정리 완료');
-    } catch (e) {
-      debugPrint('⚠️ MessageProvider 정리 실패: $e');
+    // ✅ 2. 지도 마커 정리 (비동기 작업 없이)
+    if (_adjustingPinSymbol != null && _mapLibreController != null) {
+      _mapLibreController!.removeSymbol(_adjustingPinSymbol!).catchError((e) {
+        debugPrint('⚠️ 조정 핀 제거 실패: $e');
+      });
     }
     
-    // ✅ 주소 핀 제거
     if (_addressPinMarker != null && _mapLibreController != null) {
-      try {
-        _mapLibreController!.removeSymbol(_addressPinMarker!);
-        debugPrint('✅ 주소 핀 제거 완료');
-      } catch (e) {
-        debugPrint('⚠️ dispose에서 핀 제거 실패: $e');
-      }
+      _mapLibreController!.removeSymbol(_addressPinMarker!).catchError((e) {
+        debugPrint('⚠️ 주소 핀 제거 실패: $e');
+      });
     }
     
     debugPrint('🛑 ════════════════════ dispose 완료 ════════════════════');
-    debugPrint('');
-
+    
     super.dispose();
   }
 
@@ -2991,80 +4681,60 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
-    // ✅ 통합 검색 패널 표시
+  // ✅ 통합 검색 패널 표시
   void _showUnifiedSearchPanel() async {
+    // ✅ BuildContext 저장 (중요!)
+    final scaffoldContext = context;
+    
     final shopsProvider = context.read<ShopsMapProvider>();
     final locProvider = context.read<LocationsProvider>();
     
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (_) => UnifiedSearchPanel(
+      builder: (modalContext) => UnifiedSearchPanel(
         allShops: shopsProvider.allShops,
         allFriends: locProvider.locations,
         
-        // ✅ 위치만 보기 (지도 이동만)
+        // ✅ 위치 보기 - mounted 체크 강화
         onLocationSelected: (lat, lng, title) async {
-          debugPrint('');
-          debugPrint('📍 ════════════════════ 주소 보기 ════════════════════');
-          debugPrint('   주소: $title');
-          debugPrint('   좌표: ($lat, $lng)');
+          debugPrint('📍 주소 보기: $title');
           
-          // 지도 이동
-          if (_isDesktop) {
-            _mapController.move(latlong.LatLng(lat, lng), 16.0);
-            debugPrint('✅ FlutterMap 이동 완료');
-          } else if (_mapLibreController != null) {
-            await _mapLibreController!.animateCamera(
-              CameraUpdate.newLatLngZoom(
-                LatLng(lat, lng),
-                16.0,
-              ),
-              duration: const Duration(milliseconds: 800),
-            );
-            debugPrint('✅ MapLibre 이동 완료');
+          // 1. 모달 닫기 (modalContext 사용!)
+          Navigator.pop(modalContext);
+          
+          // 2. 모달 완전히 닫힐 때까지 대기
+          await Future.delayed(const Duration(milliseconds: 300));
+          
+          // 3. ✅ 저장한 scaffoldContext로 mounted 체크
+          if (!scaffoldContext.mounted) {
+            debugPrint('⚠️ Widget disposed after modal close');
+            return;
+          }
+          
+          // 4. setState 호출
+          if (scaffoldContext.mounted) {
+            _startPinAdjustMode(lat, lng, title);
           }
           
           debugPrint('📍 ════════════════════════════════════════════════');
-          debugPrint('');
-          
-          // 스낵바 표시
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    const Icon(Icons.location_on, color: Colors.white),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-                duration: const Duration(seconds: 3),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
         },
         
-        // ✅ 주소 길찾기 (핀 + 네비게이션 패널)
+        // ✅ 주소 길찾기도 동일하게 수정
         onAddressNavigate: (lat, lng, title) async {
-          debugPrint('');
-          debugPrint('🗺️ ════════════════════ 주소 길찾기 ════════════════════');
-          debugPrint('   주소: $title');
-          debugPrint('   좌표: ($lat, $lng)');
+          debugPrint('🗺️ 주소 길찾기: $title');
           
-          final provider = context.read<LocationsProvider>();
+          Navigator.pop(modalContext);
+          await Future.delayed(const Duration(milliseconds: 300));
+          
+          if (!scaffoldContext.mounted) return;
+          
+          final provider = locProvider;
           final myLocation = provider.locations[widget.userId];
           
           if (myLocation == null) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
+            if (scaffoldContext.mounted) {
+              ScaffoldMessenger.of(scaffoldContext).showSnackBar(
                 const SnackBar(content: Text('현재 위치를 확인할 수 없습니다')),
               );
             }
@@ -3072,7 +4742,6 @@ class _MapPageState extends State<MapPage> {
           }
           
           try {
-            // 1. 경로 생성
             final navigationService = NavigationService();
             final route = await navigationService.getRoute(
               start: latlong.LatLng(myLocation.lat, myLocation.lng),
@@ -3080,32 +4749,27 @@ class _MapPageState extends State<MapPage> {
               mode: _selectedTransportMode,
             );
             
+            if (!scaffoldContext.mounted) return;
+            
             if (route == null) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
+              if (scaffoldContext.mounted) {
+                ScaffoldMessenger.of(scaffoldContext).showSnackBar(
                   const SnackBar(content: Text('❌ 경로를 찾을 수 없습니다')),
                 );
               }
               return;
             }
             
-            debugPrint('✅ 경로 생성 성공');
-            debugPrint('   이동수단: ${route.transportModeString}');
-            debugPrint('   거리: ${route.formattedDistance}');
-            debugPrint('   시간: ${route.formattedDuration}');
-            
-            // 2. 상태 업데이트
-            if (mounted) {
-              setState(() {
+            if (scaffoldContext.mounted) {
+              // ✅ 일반 setState 대신 _MapPageState의 메서드 호출
+              _setStateWrapper(() {
                 _currentRoute = route;
               });
             }
             
-            // 3. 지도에 경로 + 핀 표시
             if (_isDesktop) {
-              _showRouteOnFlutterMap(route, null); // ✅ nullable ShopModel
+              _showRouteOnFlutterMap(route, null);
             } else {
-              // ✅ 이전 핀 제거
               if (_addressPinMarker != null && _mapLibreController != null) {
                 try {
                   await _mapLibreController!.removeSymbol(_addressPinMarker!);
@@ -3114,51 +4778,210 @@ class _MapPageState extends State<MapPage> {
                 }
               }
               
-              // ✅ MapLibre에 경로 표시
-              await _showRouteOnMapLibre(route, null); // ✅ nullable ShopModel
+              await _showRouteOnMapLibre(route, null);
               
-              // ✅ 목적지에 빨간 핀 추가
-              if (_mapLibreController != null) {
-                _addressPinMarker = await _mapLibreController!.addSymbol(
-                  SymbolOptions(
-                    geometry: LatLng(lat, lng),
-                    iconImage: 'circle_red',
-                    iconSize: 1.5,
-                    iconAnchor: 'center',
-                  ),
-                );
-                debugPrint('✅ 목적지 핀 추가 완료');
+              if (scaffoldContext.mounted && _mapLibreController != null) {
+                try {
+                  _addressPinMarker = await _mapLibreController!.addSymbol(
+                    SymbolOptions(
+                      geometry: LatLng(lat, lng),
+                      iconImage: 'circle_red',
+                      iconSize: 1.5,
+                      iconAnchor: 'center',
+                    ),
+                  );
+                } catch (e) {
+                  debugPrint('⚠️ 핀 추가 실패: $e');
+                }
               }
             }
             
-            // 4. 네비게이션 패널 표시
-            if (mounted) {
+            if (scaffoldContext.mounted) {
               _showNavigationPanelForAddress(title, lat, lng, route);
             }
             
-            debugPrint('🗺️ ════════════════════ 주소 길찾기 완료 ════════════════════');
-            debugPrint('');
-            
           } catch (e) {
             debugPrint('❌ 주소 길찾기 오류: $e');
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
+            if (scaffoldContext.mounted) {
+              ScaffoldMessenger.of(scaffoldContext).showSnackBar(
                 SnackBar(content: Text('경로 생성 실패: $e')),
               );
             }
           }
         },
         
-        onShopSelected: (shop) => _showShopInfo(shop),
-        onFriendSelected: (friend) => _showUserInfo(friend),
+        onShopSelected: (shop) {
+          Navigator.pop(modalContext);
+          if (scaffoldContext.mounted) {
+            _showShopInfo(shop);
+          }
+        },
+        
+        onFriendSelected: (friend) {
+          Navigator.pop(modalContext);
+          if (scaffoldContext.mounted) {
+            _showUserInfo(friend);
+          }
+        },
       ),
     );
   }
 
-// ===================================
-// 6. 주소용 경로 재계산 헬퍼 (새로 추가)
-// ===================================
+  // MapPage 클래스에 추가
+  void _setStateWrapper(VoidCallback fn) {
+    if (mounted) {
+      setState(fn);
+    } else {
+      debugPrint('⚠️ setState 스킵: Widget not mounted');
+    }
+  }
 
+  // ═══════════════════════════════════════════════════════════
+  // ✅ 10. 핀 조정 UI 오버레이
+  // ═══════════════════════════════════════════════════════════
+  Widget _buildPinAdjustOverlay() {
+    //debugPrint('🎨 _buildPinAdjustOverlay 호출: _isPinAdjustMode = $_isPinAdjustMode');
+    
+    if (!_isPinAdjustMode) {
+      //debugPrint('🎨 핀 조정 모드 아님 → SizedBox.shrink() 반환');
+      return const SizedBox.shrink();
+    }
+    
+    debugPrint('🎨 핀 조정 UI 렌더링 중...');
+    
+    return Stack(
+      children: [
+        // 중앙 고정 핀
+        Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.place,
+                color: Colors.red,
+                size: 50,
+                shadows: [
+                  Shadow(
+                    blurRadius: 10,
+                    color: Colors.black45,
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 8,
+                    ),
+                  ],
+                ),
+                child: const Text(
+                  '지도를 움직여 위치를 조정하세요',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        
+        // 상단 안내 배너
+        Positioned(
+          top: 16,
+          left: 16,
+          right: 16,
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.deepPurple,
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 8,
+                ),
+              ],
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.info, color: Colors.white),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    '📍 핀 위치 조정 중\n지도를 드래그하여 정확한 위치로 이동하세요',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        
+        // 하단 버튼
+        Positioned(
+          bottom: 80,
+          left: 16,
+          right: 16,
+          child: Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _isPinAdjustMode = false;
+                      _adjustingPinLocation = null;
+                      _adjustingAddress = null;
+                    });
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey[600],
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  icon: const Icon(Icons.close),
+                  label: const Text('취소'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 2,
+                child: ElevatedButton.icon(
+                  onPressed: _confirmPinLocation,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.deepPurple,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  icon: const Icon(Icons.check),
+                  label: const Text(
+                    '위치 확정',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ===================================
+  // 6. 주소용 경로 재계산 헬퍼 (새로 추가)
+  // ===================================
   // ✅ 주소 경로 재계산
   Future<void> _recalculateRouteForAddress(
     double destLat,
@@ -3227,6 +5050,33 @@ class _MapPageState extends State<MapPage> {
       return '$m분 $s초';
     } else {
       return '$s초';
+    }
+  }
+
+  String _formatNavigationTime(double seconds, NavigationLanguage language) {
+    if (seconds < 60) {
+      // 1분 미만: 초 단위로 표시
+      return language == NavigationLanguage.korean
+          ? '${seconds.toInt()}초'
+          : '${seconds.toInt()}s';
+    } else if (seconds < 3600) {
+      // 1시간 미만: 분 단위로 표시
+      final minutes = (seconds / 60).round();
+      return language == NavigationLanguage.korean
+          ? '${minutes}분'
+          : '${minutes} min';
+    } else {
+      // 1시간 이상: 시간과 분으로 표시
+      final hours = (seconds / 3600).floor();
+      final minutes = ((seconds % 3600) / 60).round();
+      if (minutes == 0) {
+        return language == NavigationLanguage.korean
+            ? '${hours}시간'
+            : '${hours}h';
+      }
+      return language == NavigationLanguage.korean
+          ? '${hours}시간 ${minutes}분'
+          : '${hours}h ${minutes}m';
     }
   }
 
@@ -3468,496 +5318,36 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-// ✅ 8. 유저 정보 표시 함수 - 간단한 길찾기 버튼으로 변경
-void _showUserInfo(LocationModel user) async {
-  final profile = await _fetchUserProfile(user.userId);
-  // ignore: use_build_context_synchronously
-  final provider = context.read<LocationsProvider>();
-  
-  final nickname = profile?['nickname'] ?? profile?['name'] ?? user.userId;
-  final profileImage = profile?['profileImage'];
-  final stayInfo = _formatDuration(user.userId, provider);
-
-  if (!mounted) return;
-  
-  showModalBottomSheet(
-    context: context,
-    isScrollControlled: true,
-    builder: (bottomSheetContext) {
-      return Container(
-        padding: const EdgeInsets.all(16),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 36,
-                backgroundImage: profileImage != null
-                    ? NetworkImage(profileImage)
-                    : null,
-                child: profileImage == null
-                    ? Text(nickname.isNotEmpty
-                        ? nickname[0].toUpperCase()
-                        : '?')
-                    : null,
-              ),
-              const SizedBox(height: 10),
-              Text(
-                '$nickname ${stayInfo.isNotEmpty ? "($stayInfo)" : ""}',
-                style: const TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              Text('(${user.lat.toStringAsFixed(5)}, ${user.lng.toStringAsFixed(5)})'),
-              const SizedBox(height: 8),
-              Text('업데이트: ${DateFormat('HH:mm:ss').format(user.timestamp)}'),
-              
-              const SizedBox(height: 16),
-              
-              // ✅ 간단한 길찾기 버튼
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    debugPrint('');
-                    debugPrint('🗺️ ════════════════════ 유저 길찾기 시작 ════════════════════');
-                    debugPrint('   목적지: $nickname');
-                    
-                    // ✅ 다이얼로그 닫기
-                    Navigator.pop(bottomSheetContext);
-                    
-                    // ✅ 임시 ShopModel 생성
-                    final tempShop = ShopModel(
-                      shopId: user.userId,
-                      ownerId: user.userId,
-                      shopName: nickname,
-                      category: '사용자',
-                      lat: user.lat,
-                      lng: user.lng,
-                      address: '',
-                      phone: '',
-                      description: '',
-                      createdAt: DateTime.now(),
-                    );
-                    
-                    // ✅ 경로 계산
-                    final myLocation = provider.locations[widget.userId];
-                    if (myLocation == null) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('현재 위치를 확인할 수 없습니다')),
-                      );
-                      return;
-                    }
-                    
-                    // ✅ 기존 경로 데이터 초기화
-                    if (mounted) {
-                      setState(() {
-                        _currentInstructions = [];
-                        _selectedInstructionIndex = null;
-                        _currentRoute = null;
-                        
-                        if (_selectedInstructionMarker != null && _mapLibreController != null) {
-                          try {
-                            _mapLibreController!.removeSymbol(_selectedInstructionMarker!);
-                          } catch (e) {
-                            debugPrint('⚠️ 마커 제거 실패: $e');
-                          }
-                          _selectedInstructionMarker = null;
-                        }
-                      });
-                    }
-                    
-                    // ✅ 새 경로 계산
-                    final navigationService = NavigationService();
-                    final route = await navigationService.getRoute(
-                      start: latlong.LatLng(myLocation.lat, myLocation.lng),
-                      end: latlong.LatLng(user.lat, user.lng),
-                      mode: _selectedTransportMode,
-                    );
-                    
-                    if (route == null) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('❌ 경로를 찾을 수 없습니다')),
-                        );
-                      }
-                      return;
-                    }
-                    
-                    debugPrint('✅ 경로 생성 성공');
-                    debugPrint('   이동수단: ${route.transportModeString}');
-                    debugPrint('   거리: ${route.formattedDistance}');
-                    debugPrint('   시간: ${route.formattedDuration}');
-                    debugPrint('   안내 스텝: ${route.instructions.length}개');
-                    
-                    // ✅ 경로 업데이트
-                    if (mounted) {
-                      setState(() {
-                        _currentRoute = route;
-                      });
-                    }
-                    
-                    // ✅ 지도에 경로 표시
-                    if (_isDesktop) {
-                      _showRouteOnFlutterMap(route, tempShop);
-                    } else {
-                      await _showRouteOnMapLibre(route, tempShop);
-                    }
-                    
-                    // ✅ 네비게이션 패널 표시
-                    if (mounted) {
-                      _showNavigationPanelForUser(tempShop, route, nickname);
-                    }
-                    
-                    debugPrint('🗺️ ════════════════════ 유저 길찾기 완료 ════════════════════');
-                    debugPrint('');
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurple,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  icon: const Icon(Icons.navigation),
-                  label: const Text(
-                    '길찾기',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+  // ✅ 8. 유저 정보 표시 함수 - 간단한 길찾기 버튼으로 변경
+  void _showUserInfo(LocationModel user) async {
+    // ✅ 사용자 이름 가져오기 (locations에는 name이 없음)
+    final locProvider = context.read<LocationsProvider>();
+    final userName = user.userId; // 기본값은 userId
+    
+    // ✅ users 컬렉션에서 이름 조회 (선택사항)
+    // 만약 이름이 필요하다면 별도 조회 필요
+    
+    _showNavigationBottomSheet(
+      entityId: user.userId,
+      entityName: userName,
+      subtitle: '사용자',
+      lat: user.lat,
+      lng: user.lng,
+      headerColor: Colors.lightBlue,
+      icon: Icons.person,
+      additionalInfo: [
+        _buildInfoRow(
+          Icons.access_time,
+          '위치 업데이트',
+          _formatTimestamp(user.timestamp), // ✅ timestamp
         ),
-      );
-    },
-  );
-}
-
-  // ✅ 유저 길찾기 네비게이션 패널 (수정됨 - 길찾기 시작 버튼에 instructions 설정 추가)
-  void _showNavigationPanelForUser(ShopModel shop, RouteResult route, String nickname) {
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setModalState) => Container(
-          padding: const EdgeInsets.all(16),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // 헤더
-                Row(
-                  children: [
-                    const Icon(Icons.navigation, color: Colors.blue, size: 30),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            nickname,
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Text(
-                            '${route.formattedDistance} · ${route.formattedDuration}',
-                            style: const TextStyle(color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () {
-                        Navigator.pop(context);
-                        setState(() {
-                          _currentRoute = null;
-                          _currentInstructions = [];
-                          _selectedInstructionIndex = null;
-                        });
-                      },
-                    ),
-                  ],
-                ),
-                
-                const Divider(),
-                const SizedBox(height: 12),
-                
-                // ✅ 이동 수단 선택
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[100],
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '이동 수단 선택',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          _buildTransportModeButton(
-                            icon: Icons.directions_car,
-                            label: '자동차',
-                            mode: TransportMode.driving,
-                            onChanged: () async {
-                              setModalState(() => _selectedTransportMode = TransportMode.driving);
-                              debugPrint('🚗 자동차 모드 선택 (유저 길찾기)');
-                              
-                              final navigationService = NavigationService();
-                              final locProvider = context.read<LocationsProvider>();
-                              final myLocation = locProvider.locations[widget.userId];
-                              
-                              if (myLocation != null) {
-                                final newRoute = await navigationService.getRoute(
-                                  start: latlong.LatLng(myLocation.lat, myLocation.lng),
-                                  end: latlong.LatLng(shop.lat, shop.lng),
-                                  mode: TransportMode.driving,
-                                );
-                                
-                                if (newRoute != null) {
-                                  setModalState(() => _currentRoute = newRoute);
-                                  if (_isMobile) {
-                                    await _showRouteOnMapLibre(newRoute, shop);
-                                  } else {
-                                    _showRouteOnFlutterMap(newRoute, shop);
-                                  }
-                                }
-                              }
-                            },
-                          ),
-                          _buildTransportModeButton(
-                            icon: Icons.directions_walk,
-                            label: '도보',
-                            mode: TransportMode.walking,
-                            onChanged: () async {
-                              setModalState(() => _selectedTransportMode = TransportMode.walking);
-                              debugPrint('🚶 도보 모드 선택 (유저 길찾기)');
-                              
-                              final navigationService = NavigationService();
-                              final locProvider = context.read<LocationsProvider>();
-                              final myLocation = locProvider.locations[widget.userId];
-                              
-                              if (myLocation != null) {
-                                final newRoute = await navigationService.getRoute(
-                                  start: latlong.LatLng(myLocation.lat, myLocation.lng),
-                                  end: latlong.LatLng(shop.lat, shop.lng),
-                                  mode: TransportMode.walking,
-                                );
-                                
-                                if (newRoute != null) {
-                                  setModalState(() => _currentRoute = newRoute);
-                                  if (_isMobile) {
-                                    await _showRouteOnMapLibre(newRoute, shop);
-                                  } else {
-                                    _showRouteOnFlutterMap(newRoute, shop);
-                                  }
-                                }
-                              }
-                            },
-                          ),
-                          _buildTransportModeButton(
-                            icon: Icons.directions_bike,
-                            label: '자전거',
-                            mode: TransportMode.cycling,
-                            onChanged: () async {
-                              setModalState(() => _selectedTransportMode = TransportMode.cycling);
-                              debugPrint('🚴 자전거 모드 선택 (유저 길찾기)');
-                              
-                              final navigationService = NavigationService();
-                              final locProvider = context.read<LocationsProvider>();
-                              final myLocation = locProvider.locations[widget.userId];
-                              
-                              if (myLocation != null) {
-                                final newRoute = await navigationService.getRoute(
-                                  start: latlong.LatLng(myLocation.lat, myLocation.lng),
-                                  end: latlong.LatLng(shop.lat, shop.lng),
-                                  mode: TransportMode.cycling,
-                                );
-                                
-                                if (newRoute != null) {
-                                  setModalState(() => _currentRoute = newRoute);
-                                  if (_isMobile) {
-                                    await _showRouteOnMapLibre(newRoute, shop);
-                                  } else {
-                                    _showRouteOnFlutterMap(newRoute, shop);
-                                  }
-                                }
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                
-                const SizedBox(height: 16),
-                
-                // ✅ 현재 경로 정보 및 시작 버튼
-                if (_currentRoute != null)
-                  Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.blue[50],
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.blue[200]!),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.info, color: Colors.blue[700]),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '${_currentRoute!.transportModeString} · ${_currentRoute!.formattedDuration}',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.blue[700],
-                                    ),
-                                  ),
-                                  Text(
-                                    _currentRoute!.formattedDistance,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.blue[600],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 12),
-                      
-                      // ✅ 길찾기 시작 버튼 (중요: _currentInstructions 설정!)
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            debugPrint('');
-                            debugPrint('🚀 ════════════════════ 유저 길찾기 시작 ════════════════════');
-                            debugPrint('   목적지: $nickname');
-                            debugPrint('   이동 수단: ${_currentRoute!.transportModeString}');
-                            debugPrint('   거리: ${_currentRoute!.formattedDistance}');
-                            debugPrint('   시간: ${_currentRoute!.formattedDuration}');
-                            debugPrint('   안내 스텝: ${_currentRoute!.instructions.length}개');
-                            debugPrint('🚀 ════════════════════════════════════════════════');
-                            debugPrint('');
-                            
-                            // ✅ 핵심! setState로 _currentInstructions 설정
-                            setState(() {
-                              _currentInstructions = _currentRoute!.instructions;
-                              _selectedInstructionIndex = null;
-                              debugPrint('✅ setState 완료: _currentInstructions = ${_currentInstructions.length}개');
-                            });
-                            
-                            Navigator.pop(context);
-                            
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  '🚀 $nickname님에게 가는 길입니다!\n'
-                                  '${_currentRoute!.transportModeString} ${_currentRoute!.formattedDuration}',
-                                ),
-                                duration: const Duration(seconds: 3),
-                              ),
-                            );
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                          icon: const Icon(Icons.navigation),
-                          label: const Text(
-                            '길찾기 시작',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                
-                const SizedBox(height: 12),
-                
-                // ✅ 턴 바이 턴 (처음 3개만 표시)
-                if (_currentRoute != null && _currentRoute!.instructions.isNotEmpty)
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '길 안내',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      ..._currentRoute!.instructions.take(3).map((step) {
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Row(
-                            children: [
-                              CircleAvatar(
-                                radius: 16,
-                                backgroundColor: Colors.blue,
-                                child: Text(
-                                  '${_currentRoute!.instructions.indexOf(step) + 1}',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      step.instruction,
-                                      style: const TextStyle(fontSize: 12),
-                                    ),
-                                    Text(
-                                      step.formattedDistance,
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: Colors.grey[600],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      }),
-                    ],
-                  ),
-              ],
-            ),
-          ),
+        const SizedBox(height: 8),
+        _buildInfoRow(
+          Icons.timer,
+          '체류 시간',
+          _formatDuration(user.userId, locProvider),
         ),
-      ),
+      ],
     );
   }
 
@@ -4608,7 +5998,88 @@ void _showUserInfo(LocationModel user) async {
     ).whenComplete(() => ticker.dispose());
   }
 
-  @override
+
+  // ============================================
+  // ✅ 경로를 따라 화살표 마커 생성
+  // ============================================
+  List<latlong.Marker> _buildArrowMarkers(List<latlong.LatLng> coordinates) {
+    final arrows = <latlong.Marker>[];
+    
+    if (coordinates.length < 2) return arrows;
+    
+    // 100m마다 화살표 추가
+    const double intervalMeters = 100.0;
+    double accumulatedDistance = 0.0;
+    
+    for (int i = 0; i < coordinates.length - 1; i++) {
+      final p1 = coordinates[i];
+      final p2 = coordinates[i + 1];
+      
+      final distance = _distance.distance(p1, p2);
+      accumulatedDistance += distance;
+      
+      if (accumulatedDistance >= intervalMeters) {
+        accumulatedDistance = 0.0;
+        
+        // 진행 방향 계산
+        final bearing = _calculateBearing(p1, p2);
+        
+        arrows.add(
+          latlong.Marker(
+            key: ValueKey('arrow_$i'),
+            point: p1,
+            width: 32,
+            height: 32,
+            child: Transform.rotate(
+              angle: bearing * pi / 180,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  // 배경 원
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.2),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // 화살표 아이콘
+                  Icon(
+                    Icons.navigation,
+                    color: Colors.blue[700],
+                    size: 22,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+    }
+    
+    return arrows;
+  }
+  
+  double _calculateBearing(latlong.LatLng from, latlong.LatLng to) {
+    final lat1 = from.latitude * pi / 180;
+    final lat2 = to.latitude * pi / 180;
+    final dLon = (to.longitude - from.longitude) * pi / 180;
+    
+    final y = sin(dLon) * cos(lat2);
+    final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
+    
+    return (atan2(y, x) * 180 / pi + 360) % 360;
+  }
+
+    @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
@@ -4619,25 +6090,110 @@ void _showUserInfo(LocationModel user) async {
               : '실시간 위치 공유'
         ),
         actions: [
-            // 유저 모드일 때 홍보 리스트 버튼
-            if (_currentRole == UserRole.user)
-              Tooltip(
-                message: '홍보 메시지',
-                child: IconButton(
-                  icon: const Icon(Icons.mail),
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => UserPromotionsPage(
-                          userId: widget.userId,
-                          onNavigateToShop: _navigateToShop,
-                        ),
+          // ✅ 유저 모드일 때 홍보 리스트 버튼
+          if (_currentRole == UserRole.user)
+            Tooltip(
+              message: '홍보 메시지',
+              child: IconButton(
+                icon: const Icon(Icons.mail),
+                onPressed: () async {
+                  debugPrint('📧 홍보 페이지 열기');
+                  
+                  // ✅ MapPage의 BuildContext 저장
+                  final mapPageContext = context;
+                  
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => UserPromotionsPage(
+                        userId: widget.userId,
+                        onNavigateToShop: (shop, message) async {
+                          debugPrint('');
+                          debugPrint('🔙 ════════════════════ 길찾기 요청 ════════════════════');
+                          
+                          // ✅ MapPage context를 사용해서 BottomSheet 표시
+                          // 홍보 페이지는 닫지 않음!
+                          if (mapPageContext.mounted && mounted) {
+                            debugPrint('✅ Context mounted 확인');
+                            
+                            // ✅ 약간의 딜레이
+                            await Future.delayed(const Duration(milliseconds: 100));
+                            
+                            if (mapPageContext.mounted && mounted) {
+                              _showNavigationBottomSheet(
+                                entityId: shop.shopId,
+                                entityName: shop.shopName,
+                                subtitle: shop.category,
+                                lat: shop.lat,
+                                lng: shop.lng,
+                                headerColor: Colors.deepPurple,
+                                icon: Icons.store,
+                                additionalInfo: [
+                                  _buildInfoRow(Icons.location_on, '주소', shop.address),
+                                  const SizedBox(height: 8),
+                                  _buildInfoRow(Icons.phone, '전화', shop.phone),
+                                  if (shop.description.isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    _buildInfoRow(Icons.description, '설명', shop.description),
+                                  ],
+                                  // ✅ 홍보 메시지
+                                  if (message != null) ...[
+                                    const SizedBox(height: 12),
+                                    Container(
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.amber[50],
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: Colors.amber[200]!, width: 2),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Icon(Icons.campaign, color: Colors.orange, size: 22),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                const Text(
+                                                  '홍보 메시지',
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Colors.orange,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  message.message,
+                                                  style: const TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Colors.black87,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              );
+                              
+                              debugPrint('✅ BottomSheet 표시 완료');
+                            }
+                          }
+                          
+                          debugPrint('🔙 ════════════════════ 완료 ════════════════════');
+                          debugPrint('');
+                        },
                       ),
-                    );
-                  },
-                ),
+                    ),
+                  );
+                },
               ),
+            ),
           // ✅ 샵 필터 버튼 추가
           if (_isDesktop)
             Tooltip(
@@ -4742,6 +6298,13 @@ void _showUserInfo(LocationModel user) async {
                   setState(() {
                     _selectedGroupName = selected['name'];
                     _selectedGroupId = selected['id'];
+                    
+                    // ✅ 개인 장소도 그룹 필터 적용
+                    try {
+                      context.read<PersonalPlacesProvider>().setGroupFilter(_selectedGroupName!);
+                    } catch (e) {
+                      debugPrint('⚠️ PersonalPlacesProvider 필터링 실패: $e');
+                    }
                   });
                 }
               },
@@ -4794,6 +6357,8 @@ void _showUserInfo(LocationModel user) async {
                     child: const Icon(Icons.store),
                   ),
                 ),
+                // ✅ 핀 조정 오버레이 추가
+                _buildPinAdjustOverlay(),
             ],
           );
         },
@@ -4846,7 +6411,17 @@ void _showUserInfo(LocationModel user) async {
               onCameraMove: (CameraPosition position) {
                 final oldZoom = _currentZoom;
                 _currentZoom = position.zoom;
+
+                // ✅ 추가: 카메라 중심 항상 추적
+                _currentCameraCenter = position.target;
                 
+                // ✅ 추가: 핀 조정 모드일 때 실시간 업데이트
+                if (_isPinAdjustMode) {
+                  setState(() {
+                    _adjustingPinLocation = position.target;
+                  });
+                }
+
                 if ((oldZoom - _currentZoom).abs() > 0.01) {
                   debugPrint('📷 줌: ${oldZoom.toStringAsFixed(2)} → ${_currentZoom.toStringAsFixed(2)}');
                 }
@@ -5275,252 +6850,428 @@ void _showUserInfo(LocationModel user) async {
       return [];
     }
   }
-  // ✅ 1. 상세한 경로 안내 텍스트 추출 함수
-  // String _getDetailedInstructionText(dynamic instruction) {
-  //   try {
-  //     final instructionText = instruction.instruction ?? '';
-  //     final type = instruction.type ?? '';
-  //     final modifier = instruction.modifier ?? '';
-  //     final distance = instruction.formattedDistance ?? '';
-  //     /*
-  //     debugPrint('');
-  //     debugPrint('📍 안내 텍스트 분석:');
-  //     debugPrint('   원본: $instructionText');
-  //     debugPrint('   타입: $type');
-  //     debugPrint('   방향: $modifier');
-  //     debugPrint('   거리: $distance');
-  //     */
-  //     String directionText = '';
-      
-  //     // ✅ OSRM maneuver type + modifier 기반 한글 변환 (존댓말)
-  //     switch (type) {
-  //       case 'turn':
-  //         if (modifier == 'left') {
-  //           directionText = '좌회전하세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '우회전하세요';
-  //         } else if (modifier == 'slight left') {
-  //           directionText = '왼쪽으로 살짝 꺾으세요';
-  //         } else if (modifier == 'slight right') {
-  //           directionText = '오른쪽으로 살짝 꺾으세요';
-  //         } else if (modifier == 'sharp left') {
-  //           directionText = '왼쪽으로 급하게 꺾으세요';
-  //         } else if (modifier == 'sharp right') {
-  //           directionText = '오른쪽으로 급하게 꺾으세요';
-  //         } else if (modifier == 'uturn') {
-  //           directionText = 'U턴하세요';
-  //         } else {
-  //           directionText = '회전하세요';
-  //         }
-  //         break;
+
+  // ✅ 통합 길찾기 BottomSheet
+  void _showNavigationBottomSheet({
+    required String entityId,
+    required String entityName,
+    required String subtitle,
+    required double lat,
+    required double lng,
+    required Color headerColor,
+    required IconData icon,
+    List<Widget>? additionalInfo,
+    VoidCallback? onDelete,
+  }) {
+    debugPrint('');
+    debugPrint('📍 ════════════════════ 길찾기 BottomSheet 열기 ════════════════════');
+    debugPrint('📦 이름: $entityName');
+    debugPrint('📍 위치: ($lat, $lng)');
+    
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) {
+          // ✅ 현재 선택된 이동수단 및 고속도로 옵션
+          final currentMode = _shopTransportModeMap[entityId] ?? TransportMode.driving;
+          final currentHighway = _useHighwaysMap[entityId] ?? false;
           
-  //       case 'new name':
-  //       case 'continue':
-  //         if (modifier == 'straight') {
-  //           directionText = '직진하세요';
-  //         } else if (modifier == 'left') {
-  //           directionText = '왼쪽 방향으로 계속 가세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '오른쪽 방향으로 계속 가세요';
-  //         } else if (modifier == 'slight left') {
-  //           directionText = '왼쪽으로 조금 치우쳐 계속 가세요';
-  //         } else if (modifier == 'slight right') {
-  //           directionText = '오른쪽으로 조금 치우쳐 계속 가세요';
-  //         } else if (modifier == 'sharp left') {
-  //           directionText = '왼쪽으로 크게 꺾어 계속 가세요';
-  //         } else if (modifier == 'sharp right') {
-  //           directionText = '오른쪽으로 크게 꺾어 계속 가세요';
-  //         } else {
-  //           directionText = '계속 가세요';
-  //         }
-  //         break;
-          
-  //       case 'depart':
-  //         if (modifier == 'left') {
-  //           directionText = '왼쪽으로 출발하세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '오른쪽으로 출발하세요';
-  //         } else if (modifier == 'straight') {
-  //           directionText = '직진으로 출발하세요';
-  //         } else {
-  //           directionText = '출발하세요';
-  //         }
-  //         break;
-          
-  //       case 'arrive':
-  //         if (modifier == 'left') {
-  //           directionText = '왼쪽에 목적지가 있습니다';
-  //         } else if (modifier == 'right') {
-  //           directionText = '오른쪽에 목적지가 있습니다';
-  //         } else if (modifier == 'straight') {
-  //           directionText = '앞에 목적지가 있습니다';
-  //         } else {
-  //           directionText = '목적지에 도착했습니다';
-  //         }
-  //         break;
-          
-  //       case 'merge':
-  //         if (modifier == 'left') {
-  //           directionText = '왼쪽 차로로 합류하세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '오른쪽 차로로 합류하세요';
-  //         } else if (modifier == 'slight left') {
-  //           directionText = '왼쪽으로 합류하세요';
-  //         } else if (modifier == 'slight right') {
-  //           directionText = '오른쪽으로 합류하세요';
-  //         } else {
-  //           directionText = '합류하세요';
-  //         }
-  //         break;
-          
-  //       case 'on ramp':
-  //         if (modifier == 'left') {
-  //           directionText = '왼쪽 진입로로 진입하세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '오른쪽 진입로로 진입하세요';
-  //         } else if (modifier == 'slight left') {
-  //           directionText = '왼쪽 진입로 방향으로 가세요';
-  //         } else if (modifier == 'slight right') {
-  //           directionText = '오른쪽 진입로 방향으로 가세요';
-  //         } else {
-  //           directionText = '진입로로 진입하세요';
-  //         }
-  //         break;
-          
-  //       case 'off ramp':
-  //         if (modifier == 'left') {
-  //           directionText = '왼쪽 진출로로 나가세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '오른쪽 진출로로 나가세요';
-  //         } else if (modifier == 'slight left') {
-  //           directionText = '왼쪽 진출로 방향으로 가세요';
-  //         } else if (modifier == 'slight right') {
-  //           directionText = '오른쪽 진출로 방향으로 가세요';
-  //         } else {
-  //           directionText = '진출로로 나가세요';
-  //         }
-  //         break;
-          
-  //       case 'fork':
-  //         if (modifier == 'left') {
-  //           directionText = '왼쪽 길로 가세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '오른쪽 길로 가세요';
-  //         } else if (modifier == 'slight left') {
-  //           directionText = '왼쪽 방향 길로 가세요';
-  //         } else if (modifier == 'slight right') {
-  //           directionText = '오른쪽 방향 길로 가세요';
-  //         } else {
-  //           directionText = '분기점에서 길을 선택하세요';
-  //         }
-  //         break;
-          
-  //       case 'end of road':
-  //         if (modifier == 'left') {
-  //           directionText = '도로 끝에서 좌회전하세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '도로 끝에서 우회전하세요';
-  //         } else {
-  //           directionText = '도로가 끝납니다';
-  //         }
-  //         break;
-          
-  //       case 'use lane':
-  //         if (modifier.contains('left')) {
-  //           directionText = '왼쪽 차로를 이용하세요';
-  //         } else if (modifier.contains('right')) {
-  //           directionText = '오른쪽 차로를 이용하세요';
-  //         } else {
-  //           directionText = '차로를 유지하세요';
-  //         }
-  //         break;
-          
-  //       case 'roundabout':
-  //       case 'rotary':
-  //         if (modifier.contains('1')) {
-  //           directionText = '로터리에서 첫 번째 출구로 나가세요';
-  //         } else if (modifier.contains('2')) {
-  //           directionText = '로터리에서 두 번째 출구로 나가세요';
-  //         } else if (modifier.contains('3')) {
-  //           directionText = '로터리에서 세 번째 출구로 나가세요';
-  //         } else if (modifier.contains('4')) {
-  //           directionText = '로터리에서 네 번째 출구로 나가세요';
-  //         } else if (modifier == 'left') {
-  //           directionText = '로터리에서 왼쪽으로 나가세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '로터리에서 오른쪽으로 나가세요';
-  //         } else if (modifier == 'straight') {
-  //           directionText = '로터리에서 직진으로 나가세요';
-  //         } else {
-  //           directionText = '로터리에 진입하세요';
-  //         }
-  //         break;
-          
-  //       case 'roundabout turn':
-  //         if (modifier == 'left') {
-  //           directionText = '로터리에서 좌회전하세요';
-  //         } else if (modifier == 'right') {
-  //           directionText = '로터리에서 우회전하세요';
-  //         } else {
-  //           directionText = '로터리에서 회전하세요';
-  //         }
-  //         break;
-          
-  //       case 'notification':
-  //         if (modifier.contains('straight')) {
-  //           directionText = '직진 방향을 유지하세요';
-  //         } else {
-  //           directionText = '경로를 따라 가세요';
-  //         }
-  //         break;
-          
-  //       default:
-  //         // ✅ 기본값: instruction 텍스트에서 키워드 찾기
-  //         final lower = instructionText.toLowerCase();
-          
-  //         if (lower.contains('turn left') || lower.contains('left turn')) {
-  //           directionText = '좌회전하세요';
-  //         } else if (lower.contains('turn right') || lower.contains('right turn')) {
-  //           directionText = '우회전하세요';
-  //         } else if (lower.contains('slight left')) {
-  //           directionText = '왼쪽으로 살짝 꺾으세요';
-  //         } else if (lower.contains('slight right')) {
-  //           directionText = '오른쪽으로 살짝 꺾으세요';
-  //         } else if (lower.contains('sharp left')) {
-  //           directionText = '왼쪽으로 급하게 꺾으세요';
-  //         } else if (lower.contains('sharp right')) {
-  //           directionText = '오른쪽으로 급하게 꺾으세요';
-  //         } else if (lower.contains('straight') || lower.contains('continue')) {
-  //           directionText = '직진하세요';
-  //         } else if (lower.contains('u-turn')) {
-  //           directionText = 'U턴하세요';
-  //         } else if (lower.contains('depart')) {
-  //           directionText = '출발하세요';
-  //         } else if (lower.contains('arrive')) {
-  //           directionText = '도착했습니다';
-  //         } else {
-  //           directionText = '계속 진행하세요';
-  //         }
-  //     }
-      
-  //     // ✅ 거리 정보와 결합
-  //     String result;
-  //     if (distance.isNotEmpty && distance != '0m') {
-  //       result = '$distance 전방에서 $directionText';
-  //     } else {
-  //       result = directionText;
-  //     }
-      
-  //     //debugPrint('   결과: $result');
-  //     //debugPrint('');
-      
-  //     return result;
-      
-  //   } catch (e) {
-  //     debugPrint('⚠️ 안내 텍스트 추출 실패: $e');
-  //     return '계속 진행하세요';
-  //   }
-  // }
+          return Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.7,
+            ),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ✅ 헤더
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: headerColor,
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(icon, color: Colors.white, size: 28),
+                          const SizedBox(width: 12),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                entityName,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              Text(
+                                subtitle,
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                ),
+                
+                // ✅ 내용
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // ✅ 추가 정보 (선택사항)
+                        if (additionalInfo != null) ...additionalInfo,
+                        
+                        const SizedBox(height: 16),
+                        const Divider(),
+                        const SizedBox(height: 16),
+                        
+                        // ✅ 이동 수단 선택
+                        const Text(
+                          '이동 수단',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildTransportButton(
+                                icon: Icons.directions_car,
+                                label: '자동차',
+                                isSelected: currentMode == TransportMode.driving,
+                                onTap: () {
+                                  setModalState(() {
+                                    _shopTransportModeMap[entityId] = TransportMode.driving;
+                                  });
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildTransportButton(
+                                icon: Icons.directions_walk,
+                                label: '도보',
+                                isSelected: currentMode == TransportMode.walking,
+                                onTap: () {
+                                  setModalState(() {
+                                    _shopTransportModeMap[entityId] = TransportMode.walking;
+                                    _useHighwaysMap[entityId] = false;
+                                  });
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildTransportButton(
+                                icon: Icons.directions_bike,
+                                label: '자전거',
+                                isSelected: currentMode == TransportMode.cycling,
+                                onTap: () {
+                                  setModalState(() {
+                                    _shopTransportModeMap[entityId] = TransportMode.cycling;
+                                    _useHighwaysMap[entityId] = false;
+                                  });
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                        
+                        // ✅ 고속도로 옵션 (자동차일 때만)
+                        if (currentMode == TransportMode.driving) ...[
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.blue[50],
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.blue[200]!),
+                            ),
+                            child: Column(
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(Icons.settings, size: 20, color: Colors.blue[700]),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          currentHighway ? '고속도로 우선' : '최단 경로',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.blue[900],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    Switch(
+                                      value: currentHighway,
+                                      onChanged: (value) {
+                                        setModalState(() {
+                                          _useHighwaysMap[entityId] = value;
+                                        });
+                                      },
+                                      activeColor: Colors.blue,
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Icon(
+                                      currentHighway ? Icons.info_outline : Icons.location_on,
+                                      size: 14,
+                                      color: Colors.grey[600],
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: Text(
+                                        currentHighway
+                                            ? '고속도로를 이용한 빠른 경로로 안내합니다'
+                                            : '일반 도로로 최단 거리 안내합니다',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey[700],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                        
+                        const SizedBox(height: 24),
+                        
+                        // ✅ 길찾기 버튼
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: () async {
+                              debugPrint('🧭 길찾기 시작: $entityName');
+                              
+                              // ✅ 1. Provider 미리 가져오기
+                              final provider = context.read<LocationsProvider>();
+                              
+                              // ✅ 2. BottomSheet 닫기
+                              Navigator.pop(context);
+                              
+                              // ✅ 3. 안정화 대기
+                              await Future.delayed(const Duration(milliseconds: 100));
+                              
+                              // ✅ 4. mounted 체크
+                              if (!mounted) return;
+                              
+                              // ✅ 5. 길찾기 실행
+                              final myLocation = provider.locations[widget.userId];
+                              if (myLocation == null) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('현재 위치를 확인할 수 없습니다')),
+                                );
+                                return;
+                              }
+                              
+                              try {
+                                final transportMode = _shopTransportModeMap[entityId] ?? TransportMode.driving;
+                                final useHighways = _useHighwaysMap[entityId] ?? false;
+                                
+                                debugPrint('🚗 이동수단: $transportMode');
+                                debugPrint('🛣️ 고속도로: $useHighways');
+                                
+                                final navigationService = NavigationService();
+                                final route = await navigationService.getRoute(
+                                  start: latlong.LatLng(myLocation.lat, myLocation.lng),
+                                  end: latlong.LatLng(lat, lng),
+                                  mode: transportMode,
+                                  useHighways: useHighways,
+                                );
+                                
+                                if (route == null) {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('❌ 경로를 찾을 수 없습니다')),
+                                    );
+                                  }
+                                  return;
+                                }
+                                
+                                debugPrint('✅ 경로 생성 성공: ${route.formattedDistance}');
+                                
+                                if (mounted) {
+                                  setState(() {
+                                    _currentRoute = route;
+                                    _selectedTransportMode = transportMode;
+                                    _currentInstructions = route.instructions;
+                                  });
+
+                                  debugPrint('   거리: ${route.formattedDistance}');
+                                  debugPrint('   시간: ${route.formattedDuration}');
+                                  debugPrint('   스텝: ${route.instructions.length}개');
+  
+                                  // 지도에 경로 표시
+                                  if (_isDesktop) {
+                                    _showRouteOnFlutterMap(route, null);
+                                  } else {
+                                    await _showRouteOnMapLibre(route, null);
+                                  }
+                                  
+                                  // ✅ 안내 시작 UI는 _currentInstructions 설정으로 자동 표시됨
+                                  // _buildRouteInstructionPanel()이 자동으로 감지
+                                }
+                              } catch (e) {
+                                debugPrint('❌ 길찾기 오류: $e');
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('길찾기 오류: $e')),
+                                  );
+                                }
+                              }
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: headerColor,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                            ),
+                            icon: const Icon(Icons.navigation, size: 20),
+                            label: const Text(
+                              '길찾기',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                        
+                        // ✅ 삭제 버튼 (선택사항)
+                        if (onDelete != null) ...[
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: onDelete,
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.red,
+                                side: const BorderSide(color: Colors.red),
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                              ),
+                              icon: const Icon(Icons.delete, size: 20),
+                              label: const Text('삭제', style: TextStyle(fontSize: 16)),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ✅ 이동수단 버튼 (간단한 버전)
+  Widget _buildTransportButton({
+    required IconData icon,
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.blue[50] : Colors.grey[100],
+          border: Border.all(
+            color: isSelected ? Colors.blue : Colors.grey[300]!,
+            width: isSelected ? 2 : 1,
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          children: [
+            Icon(
+              icon,
+              color: isSelected ? Colors.blue : Colors.grey[600],
+              size: 28,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                color: isSelected ? Colors.blue : Colors.grey[700],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ 정보 행 표시
+  Widget _buildInfoRow(IconData icon, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: Colors.grey[600]),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ✅ 날짜/시간 포맷
+  String _formatTimestamp(DateTime timestamp) {
+    return DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp);
+  }
 
   Future<void> _ensureDefaultGroup() async {
     try {

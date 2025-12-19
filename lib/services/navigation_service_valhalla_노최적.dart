@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart'; // ✅ IconData를 위해 추가
 import 'package:latlong2/latlong.dart';
 import 'dart:math';
 import 'package:google_polyline_algorithm/google_polyline_algorithm.dart';
@@ -12,6 +12,7 @@ enum TransportMode {
   cycling,
 }
 
+// ✅ 언어 Enum
 enum NavigationLanguage {
   korean,
   english,
@@ -26,39 +27,18 @@ class NavigationService {
     required LatLng end,
     TransportMode mode = TransportMode.driving,
     bool steps = true,
-    bool analyzeEfficiency = true, // ✅ 효율성 분석 옵션
-    bool useHighways = false, // ✅ 고속도로 사용 여부 (자동차만 해당)
   }) async {
-    // ✅ 직선 거리 계산 (거리별 전략에 사용)
-    final straightDistance = calculateStraightDistance(start, end);
-    
-    // ✅ 고속도로 옵션에 따라 costing 타입 결정
-    String costingType = _getCostingString(mode);
-    
-    if (mode == TransportMode.driving) {
-      if (useHighways) {
-        costingType = 'auto';
-        debugPrint('🎯 Costing: auto (고속도로 이용 - 빠른 경로)');
-      } else {
-        if (straightDistance < 5000) {
-          costingType = 'auto_shorter';
-          debugPrint('🎯 Costing: auto_shorter (고속도로 미이용 - 단거리 최단)');
-        }
-      }
-    }
-    
     final requestBody = {
       'locations': [
         {'lat': start.latitude, 'lon': start.longitude},
         {'lat': end.latitude, 'lon': end.longitude},
       ],
-      'costing': costingType,  // ✅ 동적으로 변경
+      'costing': _getCostingString(mode),
       'directions_options': {
         'units': 'kilometers',
         'language': 'ko-KR',
       },
-      // ✅ 개선된 costing_options 사용
-      'costing_options': _getCostingOptions(mode, straightDistance, costingType, useHighways),
+      'costing_options': _getCostingOptions(mode),
     };
 
     debugPrint('');
@@ -67,7 +47,6 @@ class NavigationService {
     debugPrint('📍 출발: ${start.latitude}, ${start.longitude}');
     debugPrint('📍 도착: ${end.latitude}, ${end.longitude}');
     debugPrint('🚗 mode: ${_getCostingString(mode)}');
-    debugPrint('📏 직선 거리: ${(straightDistance / 1000).toStringAsFixed(2)} km');
 
     try {
       final url = Uri.parse('$_valhallaBaseUrl/route');
@@ -81,7 +60,7 @@ class NavigationService {
             },
             body: json.encode(requestBody),
           )
-          .timeout(const Duration(seconds: 30)); // ✅ 15초 → 30초로 증가
+          .timeout(const Duration(seconds: 15));
 
       debugPrint('📡 상태 코드: ${response.statusCode}');
 
@@ -154,7 +133,7 @@ class NavigationService {
           distance: length,
           duration: time,
           location: pos,
-          valhallaType: typeInt,
+          valhallaType: typeInt, // ✅ valhallaType 사용
           roadName: street,
         ));
       }
@@ -181,31 +160,17 @@ class NavigationService {
       debugPrint('');
       debugPrint('📍 ══════════════════════════════════════════════');
 
-      final result = RouteResult(
+      return RouteResult(
         coordinates: coordinates,
         distance: distance,
         duration: duration,
         instructions: stepsList,
         transportMode: mode,
       );
-      
-      // ✅ 효율성 분석 추가
-      if (analyzeEfficiency) {
-        final efficiency = RouteEfficiencyAnalyzer.analyze(
-          result,
-          start,
-          end,
-          this,
-        );
-        debugPrint(efficiency.toString());
-      }
-      
-      return result;
     } catch (e, st) {
       debugPrint('❌ 예외 발생: $e');
       debugPrint(st.toString());
-      rethrow;
-      //return null;
+      return null;
     }
   }
 
@@ -254,12 +219,7 @@ class NavigationService {
     required LatLng end,
     TransportMode mode = TransportMode.driving,
   }) async {
-    final result = await getRoute(
-      start: start,
-      end: end,
-      mode: mode,
-      analyzeEfficiency: false, // RouteInfo는 간단하게
-    );
+    final result = await getRoute(start: start, end: end, mode: mode);
     if (result == null) return null;
 
     return RouteInfo(
@@ -305,110 +265,29 @@ class NavigationService {
     }
   }
 
-  // ✅ 개선된 costing_options (거리별 전략 포함)
-  Map<String, dynamic> _getCostingOptions(
-    TransportMode mode, 
-    double straightDistance,
-    String? costingType,
-    bool useHighways,  // ✅ 고속도로 사용 여부 추가
-  ) {
-    // auto_shorter는 별도 키 사용
-    final costingKey = (costingType == 'auto_shorter') ? 'auto_shorter' : 
-                       (costingType == 'pedestrian') ? 'pedestrian' :
-                       (costingType == 'bicycle') ? 'bicycle' : 'auto';
-    
+  Map<String, dynamic> _getCostingOptions(TransportMode mode) {
     switch (mode) {
       case TransportMode.driving:
-        // ✅ 고속도로 이용 선택 시 (사용자가 체크박스 체크)
-        if (useHighways) {
-          debugPrint('🎯 전략: 고속도로 이용 (빠른 경로 우선)');
-          return {
-            costingKey: {
-              'use_highways': 0.9,      // 고속도로 강력 선호
-              'use_tolls': 0.8,         // 유료도로 선호
-              'use_ferry': 0.5,
-              'shortest': false,        // 시간 우선
-              'maneuver_penalty': 2.0,
-              'alley_penalty': 10.0,
-              'gate_cost': 30.0,
-              'service_penalty': 15.0,
-            }
-          };
-        }
-        // ✅ 고속도로 미이용 (기본값)
-        else {
-        // 단거리 (< 5km): 최단 경로 우선 (3km → 5km로 변경)
-        if (straightDistance < 5000) {
-          debugPrint('🎯 전략: 단거리 최단 경로 (고속도로 차단)');
-          return {
-            costingKey: {  // ✅ 동적 키 사용 (auto 또는 auto_shorter)
-              'use_highways': 0.0,      // ✅ 고속도로 완전 차단! (0.2 → 0.0)
-              'use_tolls': 0.0,         // ✅ 유료도로 완전 차단 (0.1 → 0.0)
-              'use_ferry': 0.0,         // 페리 차단
-              'shortest': true,         // 최단 경로!
-              'maneuver_penalty': 5.0,  // ✅ 회전 패널티 더 완화 (8.0 → 5.0)
-              'alley_penalty': 1.0,     // ✅ 골목길 허용 (2.0 → 1.0)
-              'gate_cost': 15.0,        // ✅ 게이트 비용 완화 (30.0 → 15.0)
-              'service_penalty': 1.0,   // ✅ 이면도로 거의 허용 (5.0 → 1.0)
-              'gate_penalty': 0.0,      // ✅ 게이트 패널티 제거
-              'country_crossing_cost': 0.0,  // 국가 경계 비용 없음
-            }
-          };
-        }
-        // 중거리 (5~15km): 균형잡힌 경로 (3~10km → 5~15km로 변경)
-        else if (straightDistance < 15000) {
-          debugPrint('🎯 전략: 중거리 균형 경로');
-          return {
-            costingKey: {  // ✅ costingKey 사용
-              'use_highways': 0.3,      // 고속도로 약간만 사용
-              'use_tolls': 0.3,         // 유료도로 약간
-              'use_ferry': 0.3,         // 페리 약간
-              'shortest': false,        // 최적 경로
-              'maneuver_penalty': 5.0,  // 회전 보통 패널티
-              'alley_penalty': 3.0,     // 골목길 약간 패널티
-              'gate_cost': 30.0,
-              'service_penalty': 5.0,   // 이면도로 약간 패널티
-            }
-          };
-        }
-        // 장거리 (> 15km): 빠른 경로 우선 (10km → 15km로 변경)
-        else {
-          debugPrint('🎯 전략: 장거리 빠른 경로');
-          return {
-            costingKey: {  // ✅ costingKey 사용
-              'use_highways': 0.7,      // 고속도로 선호 (0.9보다 낮음)
-              'use_tolls': 0.6,         // 유료도로 선호
-              'use_ferry': 0.5,         // 페리 중립
-              'shortest': false,        // 시간 우선
-              'maneuver_penalty': 3.0,  // 회전 약한 패널티
-              'alley_penalty': 8.0,     // 골목길 비선호
-              'gate_cost': 30.0,
-              'service_penalty': 10.0,  // 이면도로 비선호
-            }
-          };
-        }
-        } // ✅ else 블록 종료
-        
+        return {
+          'auto': {
+            'use_highways': 1.0,
+            'use_tolls': 1.0,
+            'use_ferry': 1.0,
+          }
+        };
       case TransportMode.walking:
         return {
           'pedestrian': {
             'walking_speed': 5.1,
             'max_hiking_difficulty': 1,
-            'step_penalty': 0.0,        // 계단 패널티 없음
-            'use_ferry': 0.0,           // 페리 사용 안함
-            'use_living_streets': 0.8,  // 주거지역 도로 선호
-            'shortest': true,           // 최단 경로 우선
           }
         };
-        
       case TransportMode.cycling:
         return {
           'bicycle': {
             'bicycle_type': 'Road',
             'cycling_speed': 20.0,
-            'use_roads': 0.7,                                          // 도로 사용 증가
-            'use_hills': straightDistance < 5000 ? 0.5 : 0.3,          // 단거리면 언덕 조금 허용
-            'avoid_bad_surfaces': 0.8,                                 // 나쁜 노면 회피
+            'use_roads': 0.5,
           }
         };
     }
@@ -431,136 +310,7 @@ class NavigationService {
   double _toRadians(double deg) => deg * pi / 180.0;
 }
 
-// ✅ 경로 효율성 분석 클래스
-class RouteEfficiencyAnalyzer {
-  /// 경로 효율성 분석
-  static RouteEfficiency analyze(
-    RouteResult route,
-    LatLng start,
-    LatLng end,
-    NavigationService service,
-  ) {
-    // 직선 거리
-    final straightDistance = service.calculateStraightDistance(start, end);
-    
-    // 경로 거리
-    final routeDistance = route.distance;
-    
-    // 효율성 비율
-    final efficiency = routeDistance / straightDistance;
-    
-    // 회전 횟수 계산
-    int turnCount = 0;
-    int uTurnCount = 0;
-    int straightCount = 0;
-    
-    for (final step in route.instructions) {
-      // Valhalla Type:
-      // 0: Start, 1-8: Straight, 9-11: Right turns, 12: U-turn, 13-15: Left turns
-      if (step.valhallaType >= 9 && step.valhallaType <= 11) {
-        turnCount++; // 우회전
-      } else if (step.valhallaType >= 13 && step.valhallaType <= 15) {
-        turnCount++; // 좌회전
-      } else if (step.valhallaType == 12) {
-        uTurnCount++; // U턴
-      } else if (step.valhallaType >= 1 && step.valhallaType <= 8) {
-        straightCount++; // 직진
-      }
-    }
-    
-    return RouteEfficiency(
-      straightDistance: straightDistance,
-      routeDistance: routeDistance,
-      efficiency: efficiency,
-      turnCount: turnCount,
-      uTurnCount: uTurnCount,
-      straightCount: straightCount,
-      stepCount: route.instructions.length,
-      duration: route.duration,
-    );
-  }
-  
-  /// 효율성 등급
-  static String getGrade(double efficiency) {
-    if (efficiency < 1.2) return 'A (매우 효율적)';
-    if (efficiency < 1.5) return 'B (효율적)';
-    if (efficiency < 2.0) return 'C (보통)';
-    if (efficiency < 2.5) return 'D (비효율적)';
-    return 'F (매우 비효율적)';
-  }
-  
-  /// 경고 메시지
-  static List<String> getWarnings(RouteEfficiency eff) {
-    final warnings = <String>[];
-    
-    if (eff.efficiency > 2.5) {
-      warnings.add('⚠️ 경로가 매우 비효율적입니다 (${eff.efficiency.toStringAsFixed(2)}배)');
-    } else if (eff.efficiency > 2.0) {
-      warnings.add('⚠️ 경로가 다소 비효율적입니다 (${eff.efficiency.toStringAsFixed(2)}배)');
-    }
-    
-    if (eff.uTurnCount > 0) {
-      warnings.add('⚠️ U-턴이 ${eff.uTurnCount}회 포함되어 있습니다');
-    }
-    
-    if (eff.turnCount > eff.stepCount * 0.5) {
-      warnings.add('⚠️ 회전이 많습니다 (${eff.turnCount}회 / ${eff.stepCount}개 스텝)');
-    }
-    
-    if (eff.stepCount > eff.straightDistance / 200) {
-      warnings.add('⚠️ 안내 스텝이 많습니다 (${eff.stepCount}개)');
-    }
-    
-    return warnings;
-  }
-}
-
-class RouteEfficiency {
-  final double straightDistance;
-  final double routeDistance;
-  final double efficiency;
-  final int turnCount;
-  final int uTurnCount;
-  final int straightCount;
-  final int stepCount;
-  final double duration;
-  
-  RouteEfficiency({
-    required this.straightDistance,
-    required this.routeDistance,
-    required this.efficiency,
-    required this.turnCount,
-    required this.uTurnCount,
-    required this.straightCount,
-    required this.stepCount,
-    required this.duration,
-  });
-  
-  @override
-  String toString() {
-    final warnings = RouteEfficiencyAnalyzer.getWarnings(this);
-    final grade = RouteEfficiencyAnalyzer.getGrade(efficiency);
-    
-    return '''
-
-📊 ═══════════════════ 경로 효율성 분석 ═══════════════════
-📏 직선 거리: ${(straightDistance / 1000).toStringAsFixed(2)} km
-🛣️ 경로 거리: ${(routeDistance / 1000).toStringAsFixed(2)} km
-📈 효율성 비율: ${efficiency.toStringAsFixed(2)} (${(efficiency * 100 - 100).toStringAsFixed(0)}% 증가)
-📊 등급: $grade
-⏱️ 예상 시간: ${(duration / 60).toStringAsFixed(1)}분
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔄 회전 횟수: $turnCount회
-↩️ U-턴 횟수: $uTurnCount회
-➡️ 직진 구간: $straightCount개
-📍 전체 스텝: $stepCount개
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${warnings.isNotEmpty ? warnings.join('\n') : '✅ 효율적인 경로입니다'}
-═══════════════════════════════════════════════════════════
-''';
-  }
-}
-
+// ✅ NavigationStep 클래스
 class NavigationStep {
   final String instruction;
   final double distance;

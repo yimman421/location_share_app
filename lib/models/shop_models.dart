@@ -68,6 +68,7 @@ class ShopMessageModel {
   final String message;
   final int radius; // 미터
   final int validityHours; // 시간
+  final int? maxUsers;
   final DateTime createdAt;
   final DateTime expiresAt;
   final String messageType;
@@ -84,6 +85,7 @@ class ShopMessageModel {
     required this.message,
     required this.radius,
     required this.validityHours,
+    required this.maxUsers,
     required this.createdAt,
     required this.expiresAt,
     this.messageType = 'promotion',
@@ -102,6 +104,7 @@ class ShopMessageModel {
       message: json['message'] ?? '',
       radius: json['radius'] ?? 0,
       validityHours: json['validityHours'] ?? 0,
+      maxUsers: json['maxUsers'] ?? 0,
       createdAt: json['createdAt'] != null
           ? DateTime.parse(json['createdAt'])
           : DateTime.now(),

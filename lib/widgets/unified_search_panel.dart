@@ -503,7 +503,7 @@ class _UnifiedSearchPanelState extends State<UnifiedSearchPanel> {
                   child: OutlinedButton.icon(
                     onPressed: () {
                       Navigator.pop(bottomContext);
-                      Navigator.pop(context);
+                      //Navigator.pop(context);
                       widget.onLocationSelected?.call(
                         result.lat,
                         result.lng,
@@ -526,7 +526,7 @@ class _UnifiedSearchPanelState extends State<UnifiedSearchPanel> {
                   child: ElevatedButton.icon(
                     onPressed: () {
                       Navigator.pop(bottomContext);
-                      Navigator.pop(context);
+                      //Navigator.pop(context);
                       widget.onAddressNavigate?.call(
                         result.lat,
                         result.lng,

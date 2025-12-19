@@ -6,8 +6,8 @@ import '../models/shop_models.dart';
 
 class UserPromotionsPage extends StatefulWidget {
   final String userId;
-  final Function(ShopModel, ShopMessageModel?) onNavigateToShop;
-  
+  final Future<void> Function(ShopModel, ShopMessageModel?) onNavigateToShop; // ✅ Future<void> 추가
+
   const UserPromotionsPage({
     super.key,
     required this.userId,
@@ -271,7 +271,7 @@ class _UserPromotionsPageState extends State<UserPromotionsPage> with SingleTick
           elevation: 3,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
-            side: BorderSide(color: Colors.deepPurple.shade100, width: 2),
+            side: BorderSide(color: Colors.orange.shade100, width: 2),
           ),
           child: Padding(
             padding: const EdgeInsets.all(12),
@@ -282,7 +282,7 @@ class _UserPromotionsPageState extends State<UserPromotionsPage> with SingleTick
                 Row(
                   children: [
                     CircleAvatar(
-                      backgroundColor: Colors.deepPurple,
+                      backgroundColor: Colors.orange,
                       child: Icon(
                         _getCategoryIcon(shop.category),
                         color: Colors.white,
@@ -382,7 +382,7 @@ class _UserPromotionsPageState extends State<UserPromotionsPage> with SingleTick
                         icon: const Icon(Icons.check_circle, size: 18),
                         label: const Text('수락'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.deepPurple,
+                          backgroundColor: Colors.orange,
                           foregroundColor: Colors.white,
                         ),
                       ),
@@ -473,16 +473,26 @@ class _UserPromotionsPageState extends State<UserPromotionsPage> with SingleTick
                 
                 const SizedBox(height: 12),
                 
-                // ✅ 길찾기 버튼만 유지 (이동수단 선택 제거)
+                // ✅ 길찾기 버튼
                 Row(
                   children: [
                     Expanded(
                       child: ElevatedButton.icon(
-                        onPressed: () => onNavigate(shop),
+                        onPressed: () async { // ✅ async 추가
+                          debugPrint('');
+                          debugPrint('🚀 ════════════════════ 수락된 메시지 길찾기 ════════════════════');
+                          debugPrint('📦 샵: ${shop.shopName}');
+                          
+                          // ✅ await 추가
+                          await onNavigate(shop);
+                          
+                          debugPrint('🚀 ════════════════════ 완료 ════════════════════');
+                          debugPrint('');
+                        },
                         icon: const Icon(Icons.navigation, size: 18),
                         label: const Text('길찾기'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.deepPurple,
+                          backgroundColor: Colors.orange,
                           foregroundColor: Colors.white,
                         ),
                       ),
@@ -491,15 +501,15 @@ class _UserPromotionsPageState extends State<UserPromotionsPage> with SingleTick
                     // 무시 버튼
                     SizedBox(
                       width: 50,
-                      child: OutlinedButton.icon(
+                      child: OutlinedButton(
                         onPressed: onDismiss,
-                        icon: const Icon(Icons.close, size: 18),
-                        label: const Text(''),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.grey,
+                          padding: EdgeInsets.zero,
                         ),
+                        child: const Icon(Icons.close, size: 18),
                       ),
-                    ),
+                    )
                   ],
                 ),
               ],
@@ -641,7 +651,7 @@ class _UserPromotionsPageState extends State<UserPromotionsPage> with SingleTick
                     icon: const Icon(Icons.restore, size: 18),
                     label: const Text('수락으로 복구'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.deepPurple,
+                      backgroundColor: Colors.orange,
                       foregroundColor: Colors.white,
                     ),
                   ),

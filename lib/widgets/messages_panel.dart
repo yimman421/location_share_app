@@ -307,24 +307,20 @@ class _MessageCard extends StatelessWidget {
                     Expanded(
                       flex: 2,
                       child: ElevatedButton.icon(
-                        onPressed: () async {
-                          debugPrint('');
-                          debugPrint('🚀 ════════════════════ 지도에서 길찾기 클릭 ════════════════════');
-                          debugPrint('📌 메시지: "${message.message}"');
-                          debugPrint('🏪 가게: ${shop.shopName}');
+                        onPressed: () async { // ✅ async 추가
+                          debugPrint('🚀 메시지 패널 길찾기 클릭');
                           
                           try {
-                            // ✅ 먼저 메시지를 수락으로 처리
                             final msgProvider = context.read<UserMessageProvider>();
                             final locProvider = context.read<LocationsProvider>();
                             
                             final myLocation = locProvider.locations[userId];
                             if (myLocation == null) {
-                              debugPrint('❌ 현재 위치를 확인할 수 없습니다');
+                              debugPrint('❌ 현재 위치 없음');
                               return;
                             }
                             
-                            // ✅ 메시지 수락 (DB 저장)
+                            // ✅ 메시지 수락
                             await msgProvider.acceptMessage(
                               message,
                               myLocation.lat,
@@ -333,15 +329,13 @@ class _MessageCard extends StatelessWidget {
                             
                             debugPrint('✅ 메시지 수락 완료');
                             
-                            // ✅ 그 후 길찾기 실행
-                            debugPrint('✅ 길찾기 실행 중...');
-                            onNavigate(shop);
+                            // ✅ await 추가
+                            await onNavigate(shop);
                             
-                            debugPrint('🚀 ════════════════════ 길찾기 실행 완료 ════════════════════');
-                            debugPrint('');
+                            debugPrint('✅ 길찾기 완료');
                             
                           } catch (e) {
-                            debugPrint('❌ 길찾기 실행 중 오류: $e');
+                            debugPrint('❌ 오류: $e');
                           }
                         },
                         icon: const Icon(Icons.navigation, size: 18),

@@ -47,13 +47,25 @@ class UserMessageProvider with ChangeNotifier {
 
   // ✅ 1. 초기화
   void initialize(String userId, double lat, double lng) {
+    // ✅ 이전 데이터 완전히 초기화
+    _dismissedMessageIds.clear();
+    _acceptedMessageIds.clear();
+    _receivedMessages.clear();
+    _activeMessages.clear();
+    _acceptedMessages.clear();
+    _dismissedMessages.clear();
+    _shopsCache.clear();
+
     _currentUserId = userId;
     _currentLat = lat;
     _currentLng = lng;
     
-    debugPrint('🔧 UserMessageProvider 초기화');
-    debugPrint('   userId: $userId');
-    debugPrint('   위치: ($lat, $lng)');
+    debugPrint('');
+    debugPrint('🔧 ════════════════════ UserMessageProvider 초기화 ════════════════════');
+    debugPrint('👤 사용자 ID: $userId');
+    debugPrint('📍 위치: ($lat, $lng)');
+    debugPrint('🗑️ 무시된 메시지: ${_dismissedMessageIds.length}개 (0이어야 함)');
+    debugPrint('✅ 수락된 메시지: ${_acceptedMessageIds.length}개 (0이어야 함)');
 
     _loadDismissedMessages();
     _loadAcceptedMessages();
@@ -66,16 +78,21 @@ class UserMessageProvider with ChangeNotifier {
       _checkMessagesInRange();
     });
     
-    debugPrint('✅ UserMessageProvider 초기화 완료');
+    debugPrint('🔧 ════════════════════ UserMessageProvider 초기화 완료 ════════════════════');
+    debugPrint('');
   }
 
   // ✅ 무시한 메시지 로드 (만료되지 않은 메시지만)
   Future<void> _loadDismissedMessages() async {
-    if (_currentUserId == null) return;
+    if (_currentUserId == null) {
+      debugPrint('⚠️ _loadDismissedMessages: userId가 null!');
+      return;
+    }
     
     try {
       debugPrint('');
       debugPrint('🔄 ════════════════════ 무시한 메시지 복원 시작 ════════════════════');
+      debugPrint('👤 현재 사용자: $_currentUserId');
       
       // ignore: deprecated_member_use
       final result = await _db.listDocuments(
@@ -83,18 +100,30 @@ class UserMessageProvider with ChangeNotifier {
         collectionId: ShopConstants.messageAcceptancesCollectionId,
         queries: [
           Query.equal('userId', _currentUserId!),
-          Query.equal('status', 'dismissed'), // ✅ 명확한 쿼리
-          Query.orderDesc('dismissedAt'), // ✅ 최신순 정렬
+          Query.equal('status', 'dismissed'),
+          Query.orderDesc('dismissedAt'),
         ],
       );
       
       debugPrint('📦 조회된 무시 기록: ${result.documents.length}개');
       
-      _dismissedMessageIds.clear(); // ✅ 먼저 초기화
+      // ✅ 명시적으로 초기화
+      _dismissedMessageIds.clear();
       final dismissedIds = <String>{};
       
       for (final doc in result.documents) {
         final msgId = doc.data['messageId'];
+        final docUserId = doc.data['userId'];
+        
+        // ✅ userId 검증
+        if (docUserId != _currentUserId) {
+          debugPrint('⚠️ userId 불일치 발견! (스킵됨)');
+          debugPrint('   예상: $_currentUserId');
+          debugPrint('   실제: $docUserId');
+          debugPrint('   messageId: $msgId');
+          continue;
+        }
+        
         _dismissedMessageIds.add(msgId);
         dismissedIds.add(msgId);
         debugPrint('   ✅ 무시 ID: $msgId');
@@ -102,7 +131,7 @@ class UserMessageProvider with ChangeNotifier {
       
       debugPrint('✅ 무시한 메시지 ${_dismissedMessageIds.length}개 복원');
       
-      // ✅ 무시된 메시지 상세 정보도 로드 (만료되지 않은 것만)
+      // 무시된 메시지 상세 정보도 로드 (만료되지 않은 것만)
       _dismissedMessages.clear();
       
       if (dismissedIds.isNotEmpty) {
@@ -116,7 +145,7 @@ class UserMessageProvider with ChangeNotifier {
           databaseId: AppwriteConstants.databaseId,
           collectionId: ShopConstants.shopMessagesCollectionId,
           queries: [
-            Query.greaterThan('expiresAt', now.toIso8601String()), // ✅ 만료 안 된 것만
+            Query.greaterThan('expiresAt', now.toIso8601String()),
             Query.limit(100),
           ],
         );
@@ -137,7 +166,6 @@ class UserMessageProvider with ChangeNotifier {
       debugPrint('🔄 ════════════════════ 복원 완료 ════════════════════');
       debugPrint('');
       
-      // ✅ UI 업데이트
       notifyListeners();
       
     } catch (e) {
@@ -585,6 +613,7 @@ class UserMessageProvider with ChangeNotifier {
               message: '',
               radius: 0,
               validityHours: 0,
+              maxUsers: 0,
               expiresAt: DateTime.now(),
               createdAt: DateTime.now(),
             ),

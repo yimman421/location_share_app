@@ -18,11 +18,14 @@ class AppwriteConstants {
   static const String groupsCollectionId = 'groups';
   static const String peoplesCollectionId = 'peoples';
 
-  // ✅ 새로운 컬렉션들
+  // ✅ 샵 관련 컬렉션들
   static const String shopsCollectionId = 'shops';
   static const String shopMessagesCollectionId = 'shop_messages';
   static const String messageAcceptancesCollectionId = 'message_acceptances';
   static const String meetingGroupsCollectionId = 'meeting_groups';
+
+  // ✅ 개인 장소 컬렉션 (새로 추가)
+  static const String personalPlacesCollectionId = 'personal_places';
 
   // ✅ Appwrite Function IDs
   static const String addressFunctionId = '6930eee1001f0ef3c9ed'; // ✅ Function ID 설정 필요

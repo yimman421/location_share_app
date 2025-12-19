@@ -116,6 +116,8 @@ class ShopProvider with ChangeNotifier {
     String? phone,
     String? description,
     String? bannerMessage,
+    double? lat,
+    double? lng,
   }) async {
     try {
       final updateData = <String, dynamic>{};
@@ -126,6 +128,8 @@ class ShopProvider with ChangeNotifier {
       if (phone != null) updateData['phone'] = phone;
       if (description != null) updateData['description'] = description;
       if (bannerMessage != null) updateData['bannerMessage'] = bannerMessage;
+      if (lat != null) updateData['lat'] = lat;
+      if (lng != null) updateData['lng'] = lng;
       
       // ignore: deprecated_member_use
       await _db.updateDocument(
@@ -146,6 +150,90 @@ class ShopProvider with ChangeNotifier {
     }
   }
   
+  
+  // ✅ 3-1. 샵 위치 변경
+  Future<bool> updateShopLocation({
+    required String shopId,
+    required double lat,
+    required double lng,
+    required String address,
+  }) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+      
+      final success = await updateShop(
+        shopId: shopId,
+        lat: lat,
+        lng: lng,
+        address: address,
+      );
+      
+      _isLoading = false;
+      notifyListeners();
+      
+      if (success) {
+        debugPrint('✅ 샵 위치 변경 완료: $address');
+      }
+      
+      return success;
+      
+    } catch (e) {
+      debugPrint('❌ 샵 위치 변경 실패: $e');
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+  
+  // ✅ 3-2. 샵 삭제
+  Future<bool> deleteShop(String shopId) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+      
+      // 1. 관련 메시지 먼저 삭제
+      final messages = await _db.listDocuments(
+        databaseId: AppwriteConstants.databaseId,
+        collectionId: ShopConstants.shopMessagesCollectionId,
+        queries: [
+          Query.equal('shopId', shopId),
+        ],
+      );
+      
+      for (var msg in messages.documents) {
+        await _db.deleteDocument(
+          databaseId: AppwriteConstants.databaseId,
+          collectionId: ShopConstants.shopMessagesCollectionId,
+          documentId: msg.$id,
+        );
+      }
+      
+      // 2. 샵 삭제
+      await _db.deleteDocument(
+        databaseId: AppwriteConstants.databaseId,
+        collectionId: ShopConstants.shopsCollectionId,
+        documentId: shopId,
+      );
+      
+      _myShop = null;
+      _myMessages = [];
+      _acceptances = {};
+      
+      debugPrint('✅ 샵 삭제 완료');
+      
+      _isLoading = false;
+      notifyListeners();
+      return true;
+      
+    } catch (e) {
+      debugPrint('❌ 샵 삭제 실패: $e');
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
   // ✅ 4. 홍보 메시지 전송
   Future<ShopMessageModel?> sendMessage({
     required String shopId,
@@ -153,6 +241,7 @@ class ShopProvider with ChangeNotifier {
     required String message,
     required int radius,
     required int validityHours,
+    int? maxUsers, // ✅ 추가
     String messageType = 'promotion',
     String? targetMeetingId,
   }) async {
@@ -169,6 +258,7 @@ class ShopProvider with ChangeNotifier {
         'message': message,
         'radius': radius,
         'validityHours': validityHours,
+        'maxUsers': maxUsers, // ✅ 추가
         'createdAt': now.toIso8601String(),
         'expiresAt': expiresAt.toIso8601String(),
         'messageType': messageType,
