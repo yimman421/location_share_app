@@ -29,7 +29,15 @@ class AppwriteConstants {
 
   // ✅ Appwrite Function IDs
   static const String addressFunctionId = '6930eee1001f0ef3c9ed'; // ✅ Function ID 설정 필요
+
+  // ✅ 시간 제한 그룹 컬렉션
+  static const String tempGroupsCollectionId = 'temp_groups';
+  static const String tempGroupMembersCollectionId = 'temp_group_members';
+  static const String tempGroupInvitesCollectionId = 'temp_group_invites';
   
+  // 나중에 추가될 컬렉션 (Phase 2, 3)
+  static const String tempGroupMessagesCollectionId = 'temp_group_messages';
+  static const String tempGroupExtensionsCollectionId = 'temp_group_extensions';
 }
 
 // 라우트 이름들

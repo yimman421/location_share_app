@@ -1173,387 +1173,145 @@ class _MapPageState extends State<MapPage> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => StatefulBuilder(
-        builder: (BuildContext context, StateSetter setModalState) {
-          return Container(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.8,
-            ),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-            ),
-            child: Column(
-              children: [
-                // 헤더
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: const BoxDecoration(
-                    color: Colors.deepPurple,
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      builder: (context) => Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.8,
+        ),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            // 헤더
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: const BoxDecoration(
+                color: Colors.deepPurple,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            '이 위치의 가게',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Text(
-                            '${shops.length}개 가게',
-                            style: const TextStyle(
-                              color: Colors.amber,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
+                      const Text(
+                        '이 위치의 가게',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white),
-                        onPressed: () => Navigator.pop(context),
+                      Text(
+                        '${shops.length}개 가게',
+                        style: const TextStyle(
+                          color: Colors.amber,
+                          fontSize: 14,
+                        ),
                       ),
                     ],
                   ),
-                ),
-                
-                // 샵 목록
-                Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: shops.length,
-                    itemBuilder: (context, index) {
-                      final shop = shops[index];
-                      
-                      // ✅ 샵별 기본값 설정
-                      final currentMode = _shopTransportModeMap[shop.shopId] ?? TransportMode.driving;
-                      final currentHighway = _useHighwaysMap[shop.shopId] ?? false;
-                      
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          children: [
-                            ListTile(
-                              leading: CircleAvatar(
-                                backgroundColor: Colors.deepPurple,
-                                child: Text(
-                                  shop.shopName[0].toUpperCase(),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              title: Text(
-                                shop.shopName,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              subtitle: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(shop.category),
-                                  Text(
-                                    shop.address,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 12),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            
-                            // ✅ 이동수단 선택 (샵별 독립)
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text(
-                                    '이동 수단',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.grey,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: _buildCompactTransportButton(
-                                          icon: Icons.directions_car,
-                                          label: '자동차',
-                                          isSelected: currentMode == TransportMode.driving,
-                                          onTap: () {
-                                            setModalState(() {
-                                              _shopTransportModeMap[shop.shopId] = TransportMode.driving;
-                                            });
-                                            setState(() {
-                                              _shopTransportModeMap[shop.shopId] = TransportMode.driving;
-                                            });
-                                          },
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: _buildCompactTransportButton(
-                                          icon: Icons.directions_walk,
-                                          label: '도보',
-                                          isSelected: currentMode == TransportMode.walking,
-                                          onTap: () {
-                                            setModalState(() {
-                                              _shopTransportModeMap[shop.shopId] = TransportMode.walking;
-                                            });
-                                            setState(() {
-                                              _shopTransportModeMap[shop.shopId] = TransportMode.walking;
-                                            });
-                                          },
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: _buildCompactTransportButton(
-                                          icon: Icons.directions_bike,
-                                          label: '자전거',
-                                          isSelected: currentMode == TransportMode.cycling,
-                                          onTap: () {
-                                            setModalState(() {
-                                              _shopTransportModeMap[shop.shopId] = TransportMode.cycling;
-                                            });
-                                            setState(() {
-                                              _shopTransportModeMap[shop.shopId] = TransportMode.cycling;
-                                            });
-                                          },
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                            
-                            // ✅ 자동차 모드일 때만 고속도로 옵션 표시 (샵별 독립)
-                            if (currentMode == TransportMode.driving)
-                              Container(
-                                margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[100],
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: Colors.grey[300]!),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(Icons.settings, size: 18, color: Colors.grey[700]),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      currentHighway ? '빠른 경로' : '최단 경로',
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600,
-                                        color: currentHighway ? Colors.deepPurple : Colors.grey[700],
-                                      ),
-                                    ),
-                                    const Spacer(),
-                                    Switch(
-                                      value: currentHighway,
-                                      onChanged: (value) {
-                                        setModalState(() {
-                                          _useHighwaysMap[shop.shopId] = value;
-                                        });
-                                        setState(() {
-                                          _useHighwaysMap[shop.shopId] = value;
-                                        });
-                                      },
-                                      activeColor: Colors.deepPurple,
-                                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            
-                            // ✅ 설명 텍스트
-                            if (currentMode == TransportMode.driving)
-                              Padding(
-                                padding: const EdgeInsets.only(left: 12, right: 12, bottom: 8),
-                                child: Text(
-                                  currentHighway
-                                    ? '🚗 고속도로를 이용한 빠른 경로로 안내합니다' 
-                                    : '📍 일반 도로로 최단 거리를 안내합니다',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: currentHighway ? Colors.deepPurple[700] : Colors.grey[600],
-                                    fontStyle: FontStyle.italic,
-                                  ),
-                                ),
-                              ),
-                            
-                            // ✅ 길찾기 + 상세 버튼
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: ElevatedButton.icon(
-                                      onPressed: () async {
-                                        debugPrint('🗺️ 길찾기 버튼 클릭: ${shop.shopName}');
-                                        
-                                        // ✅ 이 샵의 설정 가져오기
-                                        final transportMode = _shopTransportModeMap[shop.shopId] ?? TransportMode.driving;
-                                        final useHighways = _useHighwaysMap[shop.shopId] ?? false;
-                                        
-                                        debugPrint('🚗 이동수단: $transportMode');
-                                        debugPrint('🛣️ 고속도로 옵션: $useHighways');
-                                        
-                                        Navigator.pop(context);
-                                        
-                                        // ✅ 전역 변수 업데이트 (길찾기 실행 전)
-                                        setState(() {
-                                          _selectedTransportMode = transportMode;
-                                        });
-                                        
-                                        // ✅ 길찾기 실행
-                                        final provider = context.read<LocationsProvider>();
-                                        final myLocation = provider.locations[widget.userId];
-                                        
-                                        if (myLocation == null) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(content: Text('현재 위치를 확인할 수 없습니다')),
-                                          );
-                                          return;
-                                        }
-                                        
-                                        try {
-                                          final navigationService = NavigationService();
-                                          final route = await navigationService.getRoute(
-                                            start: latlong.LatLng(myLocation.lat, myLocation.lng),
-                                            end: latlong.LatLng(shop.lat, shop.lng),
-                                            mode: transportMode, // ✅ 샵별 이동수단
-                                            useHighways: useHighways, // ✅ 샵별 고속도로 옵션
-                                          );
-                                          
-                                          if (route == null) {
-                                            if (mounted) {
-                                              ScaffoldMessenger.of(context).showSnackBar(
-                                                const SnackBar(content: Text('❌ 경로를 찾을 수 없습니다')),
-                                              );
-                                            }
-                                            return;
-                                          }
-                                          
-                                          debugPrint('✅ 경로 생성 성공');
-                                          debugPrint('   거리: ${route.formattedDistance}');
-                                          debugPrint('   시간: ${route.formattedDuration}');
-                                          
-                                          if (mounted) {
-                                            setState(() {
-                                              _currentRoute = route;
-                                            });
-                                          }
-                                          
-                                          // 지도에 경로 표시
-                                          if (_isDesktop) {
-                                            _showRouteOnFlutterMap(route, shop);
-                                          } else {
-                                            await _showRouteOnMapLibre(route, shop);
-                                          }
-                                          
-                                          // ✅ 네비게이션 패널 표시 (이동수단 선택 생략)
-                                          if (mounted) {
-                                            _showNavigationPanelSimplified(shop, route);
-                                          }
-                                          
-                                        } catch (e) {
-                                          debugPrint('❌ 길찾기 오류: $e');
-                                        }
-                                      },
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.deepPurple,
-                                        padding: const EdgeInsets.symmetric(vertical: 12),
-                                      ),
-                                      icon: const Icon(Icons.navigation, size: 18),
-                                      label: const Text('길찾기'),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  ElevatedButton.icon(
-                                    onPressed: () {
-                                      debugPrint('ℹ️ 상세 정보 버튼 클릭: ${shop.shopName}');
-                                      Navigator.pop(context);
-                                      _showShopInfo(shop);
-                                    },
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.grey[600],
-                                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                                    ),
-                                    icon: const Icon(Icons.info_outline, size: 18),
-                                    label: const Text('상세'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          );
-        },
-      ),
-    );
-  }
-
-  // ✅ 컴팩트한 이동수단 버튼 위젯
-  Widget _buildCompactTransportButton({
-    required IconData icon,
-    required String label,
-    required bool isSelected,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.deepPurple[50] : Colors.white,
-          border: Border.all(
-            color: isSelected ? Colors.deepPurple : Colors.grey[300]!,
-            width: isSelected ? 2 : 1,
-          ),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 20,
-              color: isSelected ? Colors.deepPurple : Colors.grey[600],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                color: isSelected ? Colors.deepPurple : Colors.grey[700],
+            
+            // 샵 목록
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: shops.length,
+                itemBuilder: (context, index) {
+                  final shop = shops[index];
+                  
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      children: [
+                        ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.deepPurple,
+                            child: Text(
+                              shop.shopName[0].toUpperCase(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          title: Text(
+                            shop.shopName,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(shop.category),
+                              Text(
+                                shop.address,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                        
+                        // ✅ 버튼
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    debugPrint('🗺️ 길찾기 버튼 클릭: ${shop.shopName}');
+                                    Navigator.pop(context);
+                                    
+                                    // ✅ _showShopNavigationWithMessage 호출 (통합 함수)
+                                    _showShopNavigationWithMessage(shop);
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.deepPurple,
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                  ),
+                                  icon: const Icon(Icons.navigation, size: 18),
+                                  label: const Text('길찾기'),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              ElevatedButton.icon(
+                                onPressed: () {
+                                  debugPrint('ℹ️ 상세 정보 버튼 클릭: ${shop.shopName}');
+                                  Navigator.pop(context);
+                                  _showShopInfo(shop);
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.grey[600],
+                                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                ),
+                                icon: const Icon(Icons.info_outline, size: 18),
+                                label: const Text('상세'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
             ),
           ],
@@ -1562,19 +1320,206 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
-  // ✅ 샵 정보 표시
+  // ============================================
+  // ✅ 새로운 통합 함수: 샵 네비게이션 + 홍보 메시지
+  // ============================================
+  void _showShopNavigationWithMessage(ShopModel shop) {
+    debugPrint('');
+    debugPrint('🗺️ ════════════════════ _showShopNavigationWithMessage 호출 ════════════════════');
+    debugPrint('📦 샵: ${shop.shopName}');
+    debugPrint('🆔 샵 ID: ${shop.shopId}');
+    
+    // ✅ 홍보 메시지 조회 (activeMessages + acceptedMessages)
+    ShopMessageModel? displayMessage;
+    
+    try {
+      final msgProvider = context.read<UserMessageProvider>();
+      
+      debugPrint('🔍 홍보 메시지 조회 시작...');
+      debugPrint('📊 전체 activeMessages: ${msgProvider.activeMessages.length}개');
+      debugPrint('📊 전체 acceptedMessages: ${msgProvider.acceptedMessages.length}개');
+      
+      // ✅ 1. activeMessages에서 먼저 찾기
+      var messages = msgProvider.activeMessages
+          .where((m) => m.shopId == shop.shopId)
+          .toList();
+      
+      debugPrint('🎯 activeMessages 중 이 샵의 메시지: ${messages.length}개');
+      
+      // ✅ 2. 없으면 acceptedMessages에서 찾기
+      if (messages.isEmpty) {
+        debugPrint('🔍 acceptedMessages에서 조회 중...');
+        messages = msgProvider.acceptedMessages
+            .where((m) => m.shopId == shop.shopId)
+            .toList();
+        
+        debugPrint('🎯 acceptedMessages 중 이 샵의 메시지: ${messages.length}개');
+      }
+      
+      if (messages.isNotEmpty) {
+        displayMessage = messages.first;
+        debugPrint('✅ 홍보 메시지 발견: "${displayMessage.message}"');
+      } else {
+        debugPrint('ℹ️ 홍보 메시지 없음');
+      }
+    } catch (e) {
+      debugPrint('⚠️ 홍보 메시지 조회 실패: $e');
+    }
+    
+    debugPrint('📋 additionalInfo 구성 중...');
+    debugPrint('   displayMessage: ${displayMessage != null ? "있음" : "없음"}');
+    
+    // ✅ additionalInfo 구성
+    final List<Widget> additionalInfo = [
+      // ✅ 홍보 메시지
+      if (displayMessage != null) ...[
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.amber[50],
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.amber[200]!, width: 2),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.campaign, color: Colors.orange, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '홍보 메시지',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.orange,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      displayMessage.message,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+      ] else ...[
+        // 메시지 없을 때
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey[300]!, width: 1),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.info_outline, color: Colors.grey, size: 18),
+              SizedBox(width: 8),
+              Text(
+                '현재 진행 중인 홍보가 없습니다',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+      
+      // 기본 정보
+      _buildInfoRow(Icons.location_on, '주소', shop.address),
+      const SizedBox(height: 8),
+      _buildInfoRow(Icons.phone, '전화', shop.phone),
+      if (shop.description.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        _buildInfoRow(Icons.description, '설명', shop.description),
+      ],
+    ];
+    
+    debugPrint('✅ additionalInfo 구성 완료: ${additionalInfo.length}개 위젯');
+    
+    // ✅ _showNavigationBottomSheet 호출
+    _showNavigationBottomSheet(
+      entityId: shop.shopId,
+      entityName: shop.shopName,
+      subtitle: shop.category,
+      lat: shop.lat,
+      lng: shop.lng,
+      headerColor: Colors.deepPurple,
+      icon: Icons.store,
+      additionalInfo: additionalInfo,
+    );
+    
+    debugPrint('🗺️ ════════════════════ _showShopNavigationWithMessage 완료 ════════════════════');
+    debugPrint('');
+  }
+
+  // ============================================
+  // ✅ 샵 정보 표시 (디버깅 강화 버전)
+  // ============================================
   void _showShopInfo(ShopModel shop) {
+    debugPrint('');
+    debugPrint('📍 ════════════════════ _showShopInfo 호출 ════════════════════');
+    debugPrint('📦 샵: ${shop.shopName}');
+    
+    // ✅ 홍보 메시지 조회
+    ShopMessageModel? displayMessage;
+    
+    try {
+      final msgProvider = context.read<UserMessageProvider>();
+      
+      debugPrint('🔍 홍보 메시지 조회 시작...');
+      debugPrint('📊 전체 activeMessages 개수: ${msgProvider.activeMessages.length}');
+      
+      // 전체 메시지 출력
+      for (var msg in msgProvider.activeMessages) {
+        debugPrint('   📨 메시지: shopId=${msg.shopId}, message="${msg.message}"');
+      }
+      
+      final messages = msgProvider.activeMessages
+          .where((m) => m.shopId == shop.shopId)
+          .toList();
+      
+      debugPrint('🎯 이 샵(${shop.shopId})의 메시지: ${messages.length}개');
+      
+      if (messages.isNotEmpty) {
+        displayMessage = messages.first;
+        debugPrint('✅ 홍보 메시지 발견: "${displayMessage.message}"');
+      } else {
+        debugPrint('ℹ️ 활성화된 홍보 메시지 없음');
+      }
+    } catch (e) {
+      debugPrint('⚠️ 홍보 메시지 조회 실패: $e');
+    }
+    
+    debugPrint('📋 ShopInfoBottomSheet 호출 준비');
+    debugPrint('   displayMessage: ${displayMessage != null ? "있음 (${displayMessage.message})" : "없음"}');
+    debugPrint('');
+    
     showModalBottomSheet(
       context: context,
       builder: (_) => ShopInfoBottomSheet(
         shop: shop,
+        promotionMessage: displayMessage,  // ✅ 홍보 메시지 전달
         onNavigate: (shop) {
-          _navigateToShop(shop, null);
+          _navigateToShop(shop, displayMessage);  // ✅ 메시지도 함께 전달
         },
       ),
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
     );
+    
+    debugPrint('📍 ════════════════════ _showShopInfo 완료 ════════════════════');
+    debugPrint('');
   }
 
   // ✅ MessageProvider 초기화 함수 추출
@@ -1731,120 +1676,117 @@ class _MapPageState extends State<MapPage> {
     }
   }
   
-  // ✅ 3. 길찾기 실행 (샵별 이동수단 + 고속도로 옵션 사용)
+  // ============================================
+  // ✅ 샵 길찾기 (통합 버전 - _showShopInfo만 호출)
+  // ============================================
   Future<void> _navigateToShop(ShopModel shop, ShopMessageModel? message) async {
     debugPrint('');
-    debugPrint('🗺️ ════════════════════ _navigateToShop 시작 ════════════════════');
+    debugPrint('🗺️ ════════════════════ _navigateToShop 호출 ════════════════════');
     debugPrint('📦 샵: ${shop.shopName}');
-    debugPrint('📨 메시지: ${message?.message}');
+    debugPrint('📨 전달받은 메시지: ${message?.message}');
     
-    if (message != null) {
-      debugPrint('✅ 홍보 메시지 처리');
-      
-      // ✅ 안정화 대기
-      await Future.delayed(const Duration(milliseconds: 200));
-      debugPrint('✅ 200ms 대기 완료');
-      
-      if (!mounted) {
-        debugPrint('⚠️ Widget disposed after delay');
-        return;
-      }
-      
-      debugPrint('✅ mounted 확인');
-      debugPrint('🔧 _showNavigationBottomSheet 호출 시작');
-      
-      _showNavigationBottomSheet(
-        entityId: shop.shopId,
-        entityName: shop.shopName,
-        subtitle: shop.category,
-        lat: shop.lat,
-        lng: shop.lng,
-        headerColor: Colors.deepPurple,
-        icon: Icons.store,
-        additionalInfo: [
-          _buildInfoRow(Icons.location_on, '주소', shop.address),
-          const SizedBox(height: 8),
-          _buildInfoRow(Icons.phone, '전화', shop.phone),
-          if (shop.description.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            _buildInfoRow(Icons.description, '설명', shop.description),
-          ],
-          // ✅ 홍보 메시지 내용 표시
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.amber[50],
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.amber[200]!, width: 2),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.campaign, color: Colors.orange, size: 22),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '홍보 메시지',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.orange,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        message.message,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black87,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      );
-      
-      debugPrint('✅ _showNavigationBottomSheet 호출 완료');
-      debugPrint('🗺️ ════════════════════ _navigateToShop 완료 ════════════════════');
-      debugPrint('');
-      
+    await Future.delayed(const Duration(milliseconds: 100));
+    
+    if (!mounted) {
+      debugPrint('⚠️ Widget disposed');
       return;
     }
     
-    // 일반 샵 클릭
-    debugPrint('✅ 일반 샵 처리');
+    // ✅ 홍보 메시지 조회
+    ShopMessageModel? displayMessage = message;
     
-    _showNavigationBottomSheet(
-      entityId: shop.shopId,
-      entityName: shop.shopName,
-      subtitle: shop.category,
-      lat: shop.lat,
-      lng: shop.lng,
-      headerColor: Colors.deepPurple,
-      icon: Icons.store,
-      additionalInfo: [
-        _buildInfoRow(Icons.location_on, '주소', shop.address),
-        const SizedBox(height: 8),
-        _buildInfoRow(Icons.phone, '전화', shop.phone),
-        if (shop.description.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          _buildInfoRow(Icons.description, '설명', shop.description),
-        ],
-      ],
-    );
+    if (displayMessage == null) {
+      debugPrint('🔍 홍보 메시지 조회 시작...');
+      try {
+        final msgProvider = context.read<UserMessageProvider>();
+        
+        debugPrint('📊 전체 activeMessages 개수: ${msgProvider.activeMessages.length}');
+        
+        for (var msg in msgProvider.activeMessages) {
+          debugPrint('   📨 메시지: shopId=${msg.shopId}, message="${msg.message}"');
+        }
+        
+        final messages = msgProvider.activeMessages
+            .where((m) => m.shopId == shop.shopId)
+            .toList();
+        
+        debugPrint('🎯 이 샵(${shop.shopId})의 메시지: ${messages.length}개');
+        
+        if (messages.isNotEmpty) {
+          displayMessage = messages.first;
+          debugPrint('✅ 홍보 메시지 발견: "${displayMessage.message}"');
+        } else {
+          debugPrint('ℹ️ 활성화된 홍보 메시지 없음');
+        }
+      } catch (e) {
+        debugPrint('⚠️ 홍보 메시지 조회 실패: $e');
+      }
+    }
     
-    debugPrint('🗺️ ════════════════════ _navigateToShop 완료 ════════════════════');
+    debugPrint('');
+    debugPrint('📋 _showShopInfo 호출');
+    debugPrint('   displayMessage: ${displayMessage != null ? "있음" : "없음"}');
+    debugPrint('');
+    
+    // ✅ _showShopInfo 호출 (displayMessage 전달)
+    _showShopInfoWithMessage(shop, displayMessage);
+    
+    debugPrint('✅ _navigateToShop 완료');
+    debugPrint('🗺️ ═══════════════════════════════════════════════════');
     debugPrint('');
   }
-  
+
+  // ============================================================================
+  // ✅ 샵 정보 표시 (메시지 파라미터 포함) - 새로 추가
+  // ============================================================================
+  void _showShopInfoWithMessage(ShopModel shop, ShopMessageModel? message) {
+    debugPrint('');
+    debugPrint('📍 ════════════════════ 샵 정보 표시 ════════════════════');
+    debugPrint('📦 샵: ${shop.shopName}');
+    debugPrint('📨 메시지: ${message?.message ?? "없음"}');
+    
+    // ✅ 메시지가 전달되지 않았으면 조회
+    ShopMessageModel? displayMessage = message;
+    
+    if (displayMessage == null) {
+      debugPrint('🔍 홍보 메시지 조회 시작...');
+      try {
+        final msgProvider = context.read<UserMessageProvider>();
+        
+        debugPrint('📊 전체 activeMessages 개수: ${msgProvider.activeMessages.length}');
+        
+        final messages = msgProvider.activeMessages
+            .where((m) => m.shopId == shop.shopId)
+            .toList();
+        
+        debugPrint('🎯 이 샵의 메시지: ${messages.length}개');
+        
+        if (messages.isNotEmpty) {
+          displayMessage = messages.first;
+          debugPrint('✅ 홍보 메시지 발견: "${displayMessage.message}"');
+        }
+      } catch (e) {
+        debugPrint('⚠️ 조회 실패: $e');
+      }
+    }
+    
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => ShopInfoBottomSheet(
+        shop: shop,
+        promotionMessage: displayMessage,  // ✅ 메시지 전달
+        onNavigate: (shop) {
+          _navigateToShop(shop, displayMessage);  // ✅ 메시지와 함께 전달
+        },
+      ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+    );
+    
+    debugPrint('📍 ════════════════════ 샵 정보 표시 완료 ════════════════════');
+    debugPrint('');
+  }
+
   // ✅ 4. FlutterMap에 경로 표시
   void _showRouteOnFlutterMap(RouteResult route, ShopModel? shop) {
     // ✅ 함수 시작 시 mounted 체크
@@ -2128,92 +2070,6 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
-  // ✅ 간소화된 네비게이션 패널 (이동수단 선택 생략)
-  void _showNavigationPanelSimplified(ShopModel shop, RouteResult route) {
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 헤더
-            Row(
-              children: [
-                const Icon(Icons.navigation, color: Colors.blue, size: 30),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        shop.shopName,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      Text(
-                        '${route.formattedDistance} · ${route.formattedDuration}',
-                        style: const TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () {
-                    Navigator.pop(context);
-                    setState(() => _currentRoute = null);
-                  },
-                ),
-              ],
-            ),
-            
-            const Divider(),
-            const SizedBox(height: 12),
-            
-            // ✅ 안내 시작 버튼
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  debugPrint('');
-                  debugPrint('🚀 ════════════════════ 길찾기 시작 ════════════════════');
-                  debugPrint('   목적지: ${shop.shopName}');
-                  debugPrint('   이동 수단: ${route.transportModeString}');
-                  debugPrint('   거리: ${route.formattedDistance}');
-                  debugPrint('   시간: ${route.formattedDuration}');
-                  debugPrint('   안내 스텝: ${route.instructions.length}개');
-                  debugPrint('🚀 ════════════════════════════════════════════════');
-                  
-                  if (mounted) {
-                    setState(() {
-                      _currentInstructions = route.instructions;
-                    });
-                    debugPrint('✅ setState 완료: _currentInstructions = ${route.instructions.length}개');
-                  }
-                  
-                  Navigator.pop(context);
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                ),
-                icon: const Icon(Icons.play_arrow, size: 24),
-                label: const Text(
-                  '안내 시작',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   // ============================================
   // ✅ FlutterMap용 개인 장소 클러스터 마커 생성
   // ============================================
@@ -2405,273 +2261,6 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  // ✅ 6. 네비게이션 패널 - 완전 개선 (이동수단 선택 유지)
-  void _showNavigationPanel(ShopModel shop, RouteResult route) {
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setModalState) => Container(
-          padding: const EdgeInsets.all(16),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // 헤더
-                Row(
-                  children: [
-                    const Icon(Icons.navigation, color: Colors.blue, size: 30),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            shop.shopName,
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Text(
-                            '${route.formattedDistance} · ${route.formattedDuration}',
-                            style: const TextStyle(color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () {
-                        Navigator.pop(context);
-                        setState(() => _currentRoute = null);
-                      },
-                    ),
-                  ],
-                ),
-                
-                const Divider(),
-                const SizedBox(height: 12),
-                
-                // 이동 수단 선택
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[100],
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '이동 수단 선택',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          _buildTransportModeButton(
-                            icon: Icons.directions_car,
-                            label: '자동차',
-                            mode: TransportMode.driving,
-                            onChanged: () async {
-                              setModalState(() => _selectedTransportMode = TransportMode.driving);
-                              debugPrint('🚗 자동차 모드 선택');
-                              
-                              final navigationService = NavigationService();
-                              final locProvider = context.read<LocationsProvider>();
-                              final myLocation = locProvider.locations[widget.userId];
-                              
-                              if (myLocation != null) {
-                                final newRoute = await navigationService.getRoute(
-                                  start: latlong.LatLng(myLocation.lat, myLocation.lng),
-                                  end: latlong.LatLng(shop.lat, shop.lng),
-                                  mode: TransportMode.driving,
-                                );
-                                
-                                if (newRoute != null) {
-                                  setModalState(() => _currentRoute = newRoute);
-                                  if (_isMobile) {
-                                    await _showRouteOnMapLibre(newRoute, shop);
-                                  } else {
-                                    _showRouteOnFlutterMap(newRoute, shop);
-                                  }
-                                }
-                              }
-                            },
-                          ),
-                          _buildTransportModeButton(
-                            icon: Icons.directions_walk,
-                            label: '도보',
-                            mode: TransportMode.walking,
-                            onChanged: () async {
-                              setModalState(() => _selectedTransportMode = TransportMode.walking);
-                              debugPrint('🚶 도보 모드 선택');
-                              
-                              final navigationService = NavigationService();
-                              final locProvider = context.read<LocationsProvider>();
-                              final myLocation = locProvider.locations[widget.userId];
-                              
-                              if (myLocation != null) {
-                                final newRoute = await navigationService.getRoute(
-                                  start: latlong.LatLng(myLocation.lat, myLocation.lng),
-                                  end: latlong.LatLng(shop.lat, shop.lng),
-                                  mode: TransportMode.walking,
-                                );
-                                
-                                if (newRoute != null) {
-                                  setModalState(() => _currentRoute = newRoute);
-                                  if (_isMobile) {
-                                    await _showRouteOnMapLibre(newRoute, shop);
-                                  } else {
-                                    _showRouteOnFlutterMap(newRoute, shop);
-                                  }
-                                }
-                              }
-                            },
-                          ),
-                          _buildTransportModeButton(
-                            icon: Icons.directions_bike,
-                            label: '자전거',
-                            mode: TransportMode.cycling,
-                            onChanged: () async {
-                              setModalState(() => _selectedTransportMode = TransportMode.cycling);
-                              debugPrint('🚴 자전거 모드 선택');
-                              
-                              final navigationService = NavigationService();
-                              final locProvider = context.read<LocationsProvider>();
-                              final myLocation = locProvider.locations[widget.userId];
-                              
-                              if (myLocation != null) {
-                                final newRoute = await navigationService.getRoute(
-                                  start: latlong.LatLng(myLocation.lat, myLocation.lng),
-                                  end: latlong.LatLng(shop.lat, shop.lng),
-                                  mode: TransportMode.cycling,
-                                );
-                                
-                                if (newRoute != null) {
-                                  setModalState(() => _currentRoute = newRoute);
-                                  if (_isMobile) {
-                                    await _showRouteOnMapLibre(newRoute, shop);
-                                  } else {
-                                    _showRouteOnFlutterMap(newRoute, shop);
-                                  }
-                                }
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                
-                const SizedBox(height: 16),
-                
-                // 길찾기 정보
-                if (_currentRoute != null)
-                  Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.blue[50],
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.blue[200]!),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.info, color: Colors.blue[700]),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '${_currentRoute!.transportModeString} · ${_currentRoute!.formattedDuration}',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.blue[700],
-                                    ),
-                                  ),
-                                  Text(
-                                    _currentRoute!.formattedDistance,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.blue[600],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 12),
-                      
-                      // ✅ 길찾기 시작 버튼 (중요한 부분!)
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            debugPrint('');
-                            debugPrint('🚀 ════════════════════ 길찾기 시작 ════════════════════');
-                            debugPrint('   목적지: ${shop.shopName}');
-                            debugPrint('   이동 수단: ${_currentRoute!.transportModeString}');
-                            debugPrint('   거리: ${_currentRoute!.formattedDistance}');
-                            debugPrint('   시간: ${_currentRoute!.formattedDuration}');
-                            debugPrint('   안내 스텝: ${_currentRoute!.instructions.length}개');
-                            debugPrint('🚀 ════════════════════════════════════════════════');
-                            debugPrint('');
-                            
-                            // ✅ 이것이 핵심! setState를 사용해야 UI 업데이트됨
-                            setState(() {
-                              _currentInstructions = _currentRoute!.instructions;
-                              _selectedInstructionIndex = null;
-                              debugPrint('✅ setState 완료: _currentInstructions = ${_currentInstructions.length}개');
-                            });
-                            
-                            Navigator.pop(context);
-                            
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  '🚀 ${shop.shopName}으로 가는 길입니다!\n'
-                                  '${_currentRoute!.transportModeString} ${_currentRoute!.formattedDuration}',
-                                ),
-                                duration: const Duration(seconds: 3),
-                              ),
-                            );
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                          icon: const Icon(Icons.navigation),
-                          label: const Text(
-                            '길찾기 시작',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-        ),
-      )
-    );
-  }
-  
   // ✅ 2. 지도 위 안내 패널 (왼쪽 아래에 표시)
   Widget _buildRouteInstructionPanel() {
     if (_currentInstructions.isEmpty || _currentRoute == null) {
@@ -6851,7 +6440,7 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  // ✅ 통합 길찾기 BottomSheet
+// ✅ 통합 길찾기 BottomSheet (UI 크기 고정 버전)
   void _showNavigationBottomSheet({
     required String entityId,
     required String entityName,
@@ -6867,7 +6456,7 @@ class _MapPageState extends State<MapPage> {
     debugPrint('📍 ════════════════════ 길찾기 BottomSheet 열기 ════════════════════');
     debugPrint('📦 이름: $entityName');
     debugPrint('📍 위치: ($lat, $lng)');
-    
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -7000,10 +6589,14 @@ class _MapPageState extends State<MapPage> {
                           ],
                         ),
                         
-                        // ✅ 고속도로 옵션 (자동차일 때만)
-                        if (currentMode == TransportMode.driving) ...[
-                          const SizedBox(height: 16),
-                          Container(
+                        // ✅✅✅ 고속도로 옵션 (UI 크기 고정!)
+                        const SizedBox(height: 16),
+                        Visibility(
+                          visible: currentMode == TransportMode.driving,
+                          maintainSize: true,        // ✅ 핵심! 크기 유지
+                          maintainAnimation: true,
+                          maintainState: true,
+                          child: Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
                               color: Colors.blue[50],
@@ -7065,7 +6658,7 @@ class _MapPageState extends State<MapPage> {
                               ],
                             ),
                           ),
-                        ],
+                        ),
                         
                         const SizedBox(height: 24),
                         
@@ -7096,7 +6689,7 @@ class _MapPageState extends State<MapPage> {
                                 );
                                 return;
                               }
-                              
+
                               try {
                                 final transportMode = _shopTransportModeMap[entityId] ?? TransportMode.driving;
                                 final useHighways = _useHighwaysMap[entityId] ?? false;
@@ -7111,7 +6704,7 @@ class _MapPageState extends State<MapPage> {
                                   mode: transportMode,
                                   useHighways: useHighways,
                                 );
-                                
+
                                 if (route == null) {
                                   if (mounted) {
                                     ScaffoldMessenger.of(context).showSnackBar(
@@ -7120,9 +6713,9 @@ class _MapPageState extends State<MapPage> {
                                   }
                                   return;
                                 }
-                                
+
                                 debugPrint('✅ 경로 생성 성공: ${route.formattedDistance}');
-                                
+
                                 if (mounted) {
                                   setState(() {
                                     _currentRoute = route;
@@ -7140,7 +6733,7 @@ class _MapPageState extends State<MapPage> {
                                   } else {
                                     await _showRouteOnMapLibre(route, null);
                                   }
-                                  
+
                                   // ✅ 안내 시작 UI는 _currentInstructions 설정으로 자동 표시됨
                                   // _buildRouteInstructionPanel()이 자동으로 감지
                                 }

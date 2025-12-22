@@ -204,18 +204,29 @@ class ShopsMapMarkers {
 final navigatorKey = GlobalKey<NavigatorState>();
 
 // ✅ 샵 정보 바텀시트
+// shops_map_widget.dart의 ShopInfoBottomSheet 클래스를 이것으로 교체하세요 (라인 207-432)
+
 class ShopInfoBottomSheet extends StatelessWidget {
   final ShopModel shop;
   final Function(ShopModel)? onNavigate;
+  final ShopMessageModel? promotionMessage;  // ✅ 홍보 메시지 추가
   
   const ShopInfoBottomSheet({
     super.key,
     required this.shop,
     this.onNavigate,
+    this.promotionMessage,  // ✅ 홍보 메시지 파라미터
   });
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('');
+    debugPrint('📍 ════════════════════ 길찾기 BottomSheet 열기 ════════════════════');
+    debugPrint('📦 이름: ${shop.shopName}');
+    debugPrint('📍 위치: (${shop.lat}, ${shop.lng})');
+    debugPrint('📨 홍보 메시지: ${promotionMessage?.message ?? "없음"}');
+    debugPrint('');
+    
     return Container(
       decoration: const BoxDecoration(
         color: Colors.white,
@@ -272,6 +283,53 @@ class ShopInfoBottomSheet extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // ✅✅✅ 홍보 메시지 (activeMessages에서 가져온 것)
+                  if (promotionMessage != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.amber[50],
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.amber[200]!, width: 2),
+                      ),
+                      margin: const EdgeInsets.only(bottom: 16),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.campaign,
+                            color: Colors.orange,
+                            size: 22,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  '홍보 메시지',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.orange,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  promotionMessage!.message,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  
                   // 설명
                   if (shop.description.isNotEmpty)
                     Column(
@@ -296,21 +354,21 @@ class ShopInfoBottomSheet extends StatelessWidget {
                       ],
                     ),
                   
-                  // 배너 메시지
+                  // 배너 메시지 (기존 샵 배너)
                   if (shop.bannerMessage.isNotEmpty)
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: Colors.amber[50],
+                        color: Colors.blue[50],
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.amber),
+                        border: Border.all(color: Colors.blue[200]!),
                       ),
                       margin: const EdgeInsets.only(bottom: 16),
                       child: Row(
                         children: [
                           const Icon(
-                            Icons.campaign,
-                            color: Colors.amber,
+                            Icons.info_outline,
+                            color: Colors.blue,
                             size: 20,
                           ),
                           const SizedBox(width: 8),
