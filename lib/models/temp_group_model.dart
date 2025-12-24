@@ -1,6 +1,7 @@
 // lib/models/temp_group_model.dart
+// ✅ 기존 코드 기반 - isMaxedOut만 수정
 
-import 'package:flutter/foundation.dart';
+//import 'package:flutter/foundation.dart';
 
 // ============================================
 // ✅ 1. TempGroupModel (시간 제한 그룹)
@@ -468,7 +469,19 @@ class TempGroupInviteModel {
   }
 
   bool get isExpired => DateTime.now().isAfter(expiresAt);
-  bool get isMaxedOut => maxUses != null && usedCount >= maxUses!;
+  
+  // ✅✅✅ isMaxedOut 로직 수정 (유일한 변경사항!)
+  bool get isMaxedOut {
+    // maxUses가 null이면 무제한 → false
+    if (maxUses == null) return false;
+    
+    // maxUses가 0 이하면 무제한으로 처리 → false
+    if (maxUses! <= 0) return false;
+    
+    // 사용 횟수가 최대 횟수 이상이면 → true
+    return usedCount >= maxUses!;
+  }
+  
   bool get isValid => status == InviteStatus.active && !isExpired && !isMaxedOut;
 
   static InviteStatus _parseStatus(dynamic statusData) {

@@ -63,9 +63,9 @@ class _SimpleLocationPickerState extends State<SimpleLocationPicker> {
               initialCenter: _currentCenter,
               initialZoom: 16.0,
               onPositionChanged: (position, hasGesture) {
-                if (hasGesture && position.center != null) {
+                if (hasGesture) {
                   setState(() {
-                    _currentCenter = position.center!;
+                    _currentCenter = position.center;
                   });
                 }
               },

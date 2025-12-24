@@ -8,6 +8,7 @@ import 'providers/shops_map_provider.dart';
 import 'dart:io';
 import 'providers/personal_places_provider.dart';
 import 'providers/temp_groups_provider.dart';
+import 'providers/temp_group_messages_provider.dart';
 
 // ✅ SSL 검증 비활성
 class MyHttpOverrides extends HttpOverrides {
@@ -39,6 +40,9 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => ShopsMapProvider()),
         ChangeNotifierProvider(create: (_) => PersonalPlacesProvider()),
         ChangeNotifierProvider(create: (_) => TempGroupsProvider()),
+        ChangeNotifierProvider(create: (_) => TempGroupMessagesProvider(),),
+        ChangeNotifierProvider(create: (_) => TempGroupMessagesProvider()),
+
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,

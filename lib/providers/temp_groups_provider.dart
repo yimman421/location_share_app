@@ -4,12 +4,13 @@ import 'package:flutter/foundation.dart';
 import 'package:appwrite/appwrite.dart';
 import 'dart:math';
 import '../models/temp_group_model.dart';
+import '../models/temp_group_message_model.dart';
 import '../constants/appwrite_config.dart';
 import '../appwriteClient.dart';
 
 class TempGroupsProvider with ChangeNotifier {
   final Databases _db = appwriteDB;
-  final Account _account = appwriteAccount;
+  //final Account _account = appwriteAccount;
   final Realtime _realtime = appwriteRealtime;
   
   // 내 그룹 목록
@@ -120,17 +121,16 @@ class TempGroupsProvider with ChangeNotifier {
   // ============================================
   // ✅ 2. 내 그룹 목록 조회
   // ============================================
-  
   Future<void> fetchMyGroups(String userId) async {
+    // ✅✅✅ build 중에 notifyListeners 호출 방지
     _isLoading = true;
-    notifyListeners();
+    // notifyListeners(); ← 여기서는 호출하지 않음!
     
     try {
-      debugPrint('');
       debugPrint('📋 ════════════════════ 내 그룹 조회 ════════════════════');
       debugPrint('👤 userId: $userId');
       
-      // 내가 멤버로 있는 그룹 ID 조회
+      // 1. 내가 멤버인 그룹 ID 조회
       final memberDocs = await _db.listDocuments(
         databaseId: AppwriteConstants.databaseId,
         collectionId: AppwriteConstants.tempGroupMembersCollectionId,
@@ -140,21 +140,22 @@ class TempGroupsProvider with ChangeNotifier {
         ],
       );
       
+      debugPrint('📦 멤버로 있는 그룹: ${memberDocs.documents.length}개');
+      
+      if (memberDocs.documents.isEmpty) {
+        _myGroups = [];
+        _isLoading = false;
+        notifyListeners(); // ✅ 여기서는 안전
+        debugPrint('ℹ️ 참여 중인 그룹 없음');
+        return;
+      }
+      
+      // 2. 그룹 ID 추출
       final groupIds = memberDocs.documents
           .map((doc) => doc.data['groupId'] as String)
           .toList();
       
-      debugPrint('📦 멤버로 있는 그룹: ${groupIds.length}개');
-      
-      if (groupIds.isEmpty) {
-        _myGroups = [];
-        debugPrint('ℹ️ 참여 중인 그룹 없음');
-        debugPrint('📋 ══════════════════════════════════════════════');
-        debugPrint('');
-        return;
-      }
-      
-      // 그룹 정보 조회
+      // 3. 그룹 정보 조회
       final groupDocs = await _db.listDocuments(
         databaseId: AppwriteConstants.databaseId,
         collectionId: AppwriteConstants.tempGroupsCollectionId,
@@ -164,23 +165,21 @@ class TempGroupsProvider with ChangeNotifier {
         ],
       );
       
+      // 4. 모델 변환
       _myGroups = groupDocs.documents
           .map((doc) => TempGroupModel.fromMap(doc.$id, doc.data))
           .toList();
       
+      _isLoading = false;
+      notifyListeners(); // ✅ 여기서 호출
+      
       debugPrint('✅ 그룹 조회 완료: ${_myGroups.length}개');
-      for (final group in _myGroups) {
-        debugPrint('   - ${group.groupName} (${group.formattedRemainingTime})');
-      }
-      debugPrint('📋 ══════════════════════════════════════════════');
-      debugPrint('');
       
     } catch (e) {
       debugPrint('❌ 그룹 조회 실패: $e');
       _myGroups = [];
-    } finally {
       _isLoading = false;
-      notifyListeners();
+      notifyListeners(); // ✅ 에러 시에도 호출
     }
   }
   
@@ -279,7 +278,6 @@ class TempGroupsProvider with ChangeNotifier {
   // ============================================
   // ✅ 5. 초대 코드로 그룹 참여
   // ============================================
-  
   Future<TempGroupModel?> joinGroupByInvite({
     required String inviteCode,
     required String userId,
@@ -291,30 +289,59 @@ class TempGroupsProvider with ChangeNotifier {
       debugPrint('👤 userId: $userId');
       
       // 1. 초대 코드로 초대 문서 조회
+      debugPrint('');
+      debugPrint('📋 Step 1: 초대 코드 조회 중...');
+      
       final inviteDocs = await _db.listDocuments(
         databaseId: AppwriteConstants.databaseId,
         collectionId: AppwriteConstants.tempGroupInvitesCollectionId,
         queries: [
           Query.equal('inviteCode', inviteCode),
-          Query.equal('status', 'active'),
         ],
       );
       
+      debugPrint('📦 조회된 초대 문서 수: ${inviteDocs.documents.length}');
+      
       if (inviteDocs.documents.isEmpty) {
-        debugPrint('❌ 유효하지 않은 초대 코드');
+        debugPrint('❌ 초대 코드를 찾을 수 없음: $inviteCode');
+        debugPrint('');
+        debugPrint('🔍 디버깅 정보:');
+        debugPrint('   - Database: ${AppwriteConstants.databaseId}');
+        debugPrint('   - Collection: ${AppwriteConstants.tempGroupInvitesCollectionId}');
+        debugPrint('   - 입력한 코드: $inviteCode');
+        debugPrint('');
         return null;
       }
       
       final inviteDoc = inviteDocs.documents.first;
       final invite = TempGroupInviteModel.fromMap(inviteDoc.$id, inviteDoc.data);
       
+      debugPrint('✅ 초대 문서 발견!');
+      debugPrint('   - ID: ${invite.id}');
+      debugPrint('   - 그룹 ID: ${invite.groupId}');
+      debugPrint('   - 상태: ${invite.status.name}');
+      debugPrint('   - 만료일: ${invite.expiresAt}');
+      debugPrint('   - 사용 횟수: ${invite.usedCount}/${invite.maxUses ?? "무제한"}');
+      
       // 2. 초대 유효성 검사
+      debugPrint('');
+      debugPrint('📋 Step 2: 초대 유효성 검사 중...');
+      
       if (!invite.isValid) {
-        debugPrint('❌ 초대가 만료되었거나 사용 불가');
+        debugPrint('❌ 초대가 유효하지 않음');
+        debugPrint('   - status: ${invite.status.name}');
+        debugPrint('   - isExpired: ${invite.isExpired}');
+        debugPrint('   - isMaxedOut: ${invite.isMaxedOut}');
+        debugPrint('');
         return null;
       }
       
+      debugPrint('✅ 초대 유효함');
+      
       // 3. 그룹 정보 조회
+      debugPrint('');
+      debugPrint('📋 Step 3: 그룹 정보 조회 중...');
+      
       final groupDoc = await _db.getDocument(
         databaseId: AppwriteConstants.databaseId,
         collectionId: AppwriteConstants.tempGroupsCollectionId,
@@ -323,13 +350,30 @@ class TempGroupsProvider with ChangeNotifier {
       
       final group = TempGroupModel.fromMap(groupDoc.$id, groupDoc.data);
       
+      debugPrint('✅ 그룹 발견!');
+      debugPrint('   - 이름: ${group.groupName}');
+      debugPrint('   - 상태: ${group.status.name}');
+      debugPrint('   - 멤버 수: ${group.memberCount}/${group.maxMembers ?? "무제한"}');
+      debugPrint('   - 만료일: ${group.expiresAt}');
+      
       // 4. 그룹 참여 가능 여부 확인
+      debugPrint('');
+      debugPrint('📋 Step 4: 그룹 참여 가능 여부 확인 중...');
+      
       if (!group.canJoin) {
-        debugPrint('❌ 그룹이 만료되었거나 인원이 가득 참');
+        debugPrint('❌ 그룹 참여 불가');
+        debugPrint('   - isActive: ${group.isActive}');
+        debugPrint('   - isFull: ${group.isFull}');
+        debugPrint('');
         return null;
       }
       
-      // 5. 이미 멤버인지 확인
+      debugPrint('✅ 그룹 참여 가능');
+      
+      // ✅✅✅ Step 5: 멤버 중복 확인 (status 확인 추가)
+      debugPrint('');
+      debugPrint('📋 Step 5: 멤버 중복 확인 중...');
+      
       final existingMembers = await _db.listDocuments(
         databaseId: AppwriteConstants.databaseId,
         collectionId: AppwriteConstants.tempGroupMembersCollectionId,
@@ -339,12 +383,74 @@ class TempGroupsProvider with ChangeNotifier {
         ],
       );
       
+      debugPrint('📦 기존 멤버 문서 수: ${existingMembers.documents.length}');
+      
       if (existingMembers.documents.isNotEmpty) {
-        debugPrint('ℹ️ 이미 그룹 멤버입니다');
-        return group;
+        final existingMember = existingMembers.documents.first;
+        final memberStatus = existingMember.data['status'] as String?;
+        
+        debugPrint('📊 기존 멤버 상태: $memberStatus');
+        
+        if (memberStatus == 'active') {
+          // ✅ 이미 활성 멤버
+          debugPrint('ℹ️ 이미 그룹 멤버입니다');
+          debugPrint('✅ 그룹 참여 완료 (기존 멤버)');
+          debugPrint('🚪 ══════════════════════════════════════════════');
+          debugPrint('');
+          return group;
+        } else if (memberStatus == 'left') {
+          // ✅✅✅ 나간 멤버 → 재참여 처리
+          debugPrint('🔄 나간 멤버 재참여 처리 중...');
+          
+          // Step 5-1: status를 active로 변경
+          await _db.updateDocument(
+            databaseId: AppwriteConstants.databaseId,
+            collectionId: AppwriteConstants.tempGroupMembersCollectionId,
+            documentId: existingMember.$id,
+            data: {
+              'status': 'active',
+              'joinedAt': DateTime.now().toIso8601String(),
+            },
+          );
+          
+          debugPrint('✅ 멤버 상태 업데이트 완료: left → active');
+          
+          // Step 5-2: 그룹 멤버 수 증가
+          debugPrint('📋 Step 5-2: 그룹 멤버 수 업데이트 중...');
+          await _db.updateDocument(
+            databaseId: AppwriteConstants.databaseId,
+            collectionId: AppwriteConstants.tempGroupsCollectionId,
+            documentId: groupDoc.$id,
+            data: {
+              'memberCount': group.memberCount + 1,
+              'lastActivityAt': DateTime.now().toIso8601String(),
+            },
+          );
+          
+          debugPrint('✅ 멤버 수 업데이트 완료: ${group.memberCount} → ${group.memberCount + 1}');
+          
+          // ✅✅✅ 재참여 시스템 메시지
+          await _sendSystemMessage(
+            groupId: invite.groupId,
+            message: SystemMessageHelper.memberRejoined(userId),
+          );
+          
+          debugPrint('✅ 재참여 완료');
+          debugPrint('🚪 ══════════════════════════════════════════════');
+          debugPrint('');
+          
+          await fetchMyGroups(userId);
+          return group;
+        }
       }
       
+      // ✅ 새로운 멤버 추가
+      debugPrint('✅ 새로운 멤버');
+      
       // 6. 멤버 추가
+      debugPrint('');
+      debugPrint('📋 Step 6: 멤버 추가 중...');
+      
       await _addMemberToGroup(
         groupId: invite.groupId,
         userId: userId,
@@ -352,7 +458,12 @@ class TempGroupsProvider with ChangeNotifier {
         invitedBy: invite.createdBy,
       );
       
+      debugPrint('✅ 멤버 추가 완료');
+      
       // 7. 그룹 멤버 수 증가
+      debugPrint('');
+      debugPrint('📋 Step 7: 그룹 멤버 수 업데이트 중...');
+      
       await _db.updateDocument(
         databaseId: AppwriteConstants.databaseId,
         collectionId: AppwriteConstants.tempGroupsCollectionId,
@@ -363,16 +474,32 @@ class TempGroupsProvider with ChangeNotifier {
         },
       );
       
-      // 8. 초대 사용 횟수 증가
-      await _db.updateDocument(
-        databaseId: AppwriteConstants.databaseId,
-        collectionId: AppwriteConstants.tempGroupInvitesCollectionId,
-        documentId: inviteDoc.$id,
-        data: {
-          'usedCount': invite.usedCount + 1,
-        },
-      );
+      debugPrint('✅ 멤버 수 업데이트 완료: ${group.memberCount} → ${group.memberCount + 1}');
       
+      // 8. 초대 사용 횟수 증가
+      // ✅✅✅ 입장 시스템 메시지
+      await _sendSystemMessage(
+        groupId: invite.groupId,
+        message: SystemMessageHelper.memberJoined(userId),
+      );
+      debugPrint('');
+      debugPrint('📋 Step 8: 초대 사용 횟수 업데이트 중...');
+      try {
+        await _db.updateDocument(
+          databaseId: AppwriteConstants.databaseId,
+          collectionId: AppwriteConstants.tempGroupInvitesCollectionId,
+          documentId: inviteDoc.$id,
+          data: {
+            'usedCount': (inviteDoc.data['usedCount'] as int? ?? 0) + 1,
+          },
+        );
+        debugPrint('✅ 초대 사용 횟수 업데이트 완료');
+      } catch (e) {
+        // ✅ 권한 없어도 무시 (멤버 추가는 이미 완료됨)
+        debugPrint('⚠️ 초대 사용 횟수 업데이트 실패 (무시): $e');
+      }
+      
+      debugPrint('');
       debugPrint('✅ 그룹 참여 완료');
       debugPrint('📦 그룹: ${group.groupName}');
       debugPrint('🚪 ══════════════════════════════════════════════');
@@ -383,8 +510,14 @@ class TempGroupsProvider with ChangeNotifier {
       
       return group;
       
-    } catch (e) {
-      debugPrint('❌ 그룹 참여 실패: $e');
+    } catch (e, stackTrace) {
+      debugPrint('');
+      debugPrint('❌ ═══════════════ 그룹 참여 에러 ═══════════════');
+      debugPrint('🔴 에러: $e');
+      debugPrint('📍 Stack Trace:');
+      debugPrint('$stackTrace');
+      debugPrint('❌ ═══════════════════════════════════════════════');
+      debugPrint('');
       return null;
     }
   }
@@ -452,6 +585,11 @@ class TempGroupsProvider with ChangeNotifier {
         },
       );
       
+      // ✅✅✅ 퇴장 시스템 메시지
+      await _sendSystemMessage(
+        groupId: groupId,
+        message: SystemMessageHelper.memberLeft(userId),
+      );
       debugPrint('✅ 그룹 나가기 완료');
       
       // 목록 새로고침
@@ -600,7 +738,33 @@ class TempGroupsProvider with ChangeNotifier {
       ],
     );
   }
-  
+
+  // ✅✅✅ 시스템 메시지 전송
+  Future<void> _sendSystemMessage({
+    required String groupId,
+    required Map<String, dynamic> message,
+  }) async {
+    try {
+      await _db.createDocument(
+        databaseId: AppwriteConstants.databaseId,
+        collectionId: AppwriteConstants.tempGroupMessagesCollectionId,
+        documentId: ID.unique(),
+        data: {
+          'groupId': groupId,
+          'userId': 'system',
+          'message': message['message'],
+          'type': message['type'],
+          'isDeleted': false,
+          'replyTo': null,
+        },
+      );
+      
+      debugPrint('✅ 시스템 메시지 전송 완료');
+    } catch (e) {
+      debugPrint('⚠️ 시스템 메시지 전송 실패 (무시): $e');
+    }
+  }
+
   // 6자리 초대 코드 생성
   String _generateInviteCode() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -620,8 +784,6 @@ class TempGroupsProvider with ChangeNotifier {
   
   // 내가 생성자인 그룹
   List<TempGroupModel> get myCreatedGroups {
-    // creatorId는 현재 로그인한 유저 ID와 비교해야 하지만
-    // 여기서는 간단히 role이 creator인 그룹만 필터링
     return _myGroups;
   }
   

@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/personal_place_model.dart';
 import '../providers/personal_places_provider.dart';
-import '../providers/locations_provider.dart';
+//import '../providers/locations_provider.dart';
 
 class SavePlaceDialog extends StatefulWidget {
   final String userId;

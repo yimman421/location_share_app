@@ -34,6 +34,14 @@ import '../widgets/unified_search_panel.dart';
 import '../models/personal_place_model.dart';
 import '../providers/personal_places_provider.dart';
 import '../widgets/save_place_dialog.dart';
+import '../screens/temp_group_list_screen.dart';
+import '../screens/temp_group_create_screen.dart';
+import '../screens/temp_group_detail_screen.dart';
+import '../providers/temp_groups_provider.dart';
+import '../models/temp_group_model.dart';
+import '../screens/temp_group_join_screen.dart';
+import '../screens/temp_group_chat_screen.dart';
+import '../providers/temp_group_messages_provider.dart';  // ✅ 추가
 
 class MapPage extends StatefulWidget {
   final String userId;
@@ -125,6 +133,7 @@ class _MapPageState extends State<MapPage> {
   final Map<String, PersonalPlaceModel> _personalPlaceMarkers = {}; // placeId -> PersonalPlaceModel
   final Map<String, List<PersonalPlaceModel>> _personalPlaceClusterMarkers = {}; // cluster_id -> List<PersonalPlaceModel>
   bool _showPersonalPlacesLayer = true; // ✅ 레이어 토글
+  LocationsProvider? _locationsProvider;
 
   // ✅ 플랫폼 확인
   // bool get _isDesktop {
@@ -177,7 +186,7 @@ class _MapPageState extends State<MapPage> {
     debugPrint('');
     debugPrint('🎬 ════════════════════ MapPage initState ════════════════════');
     debugPrint('📍 userId: ${widget.userId}');
-    
+
     // ✅ 1. 기본 초기화 (동기)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -188,6 +197,9 @@ class _MapPageState extends State<MapPage> {
       final provider = context.read<LocationsProvider>();
       provider.resetRealtimeConnection();
       provider.startAll(startLocationStream: true);
+      // ✅ Provider 참조 저장
+      _locationsProvider = context.read<LocationsProvider>();
+      _locationsProvider!.addListener(_handleMapMoveRequest);
 
       if (_mapMode == 'LOCAL') {
         _activateLocalMode(provider);
@@ -335,7 +347,7 @@ class _MapPageState extends State<MapPage> {
         debugPrint('ℹ️ 일반 지도 모드');
       }
     });
-    
+
     // ✅ 4. Provider 초기화 (순서 보장)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -399,8 +411,106 @@ class _MapPageState extends State<MapPage> {
       debugPrint('⚠️ PersonalPlacesProvider 초기화 실패: $e');
     }
     });
+
+    // ✅✅✅ 지도 이동 리스너 추가 (initState 끝부분에)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      debugPrint('🎧 지도 이동 리스너 등록 시작');
+      try {
+        final locationsProvider = context.read<LocationsProvider>();
+        locationsProvider.addListener(_handleMapMoveRequest);
+        debugPrint('✅ 지도 이동 리스너 등록 완료');
+      } catch (e) {
+        debugPrint('❌ 리스너 등록 실패: $e');
+      }
+    });
+
+    // ✅ 그룹 Provider 초기화
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final groupProvider = context.read<TempGroupsProvider>();
+      groupProvider.fetchMyGroups(widget.userId);
+      groupProvider.subscribeToGroups(widget.userId);
+    });
+  }
+
+  // ✅✅✅ 그룹 액션 핸들러 (새로 추가)
+  void _handleGroupAction(String action) {
+    switch (action) {
+      case 'list':
+        _openGroupList();
+        break;
+      case 'create':
+        _createNewGroup();
+        break;
+      case 'join':  // ✅ 추가
+        _joinWithCode();
+        break;
+      case 'active':
+        _openGroupList(); // 활성 그룹만 표시
+        break;
+    }
+  }
+
+  // ✅ 그룹 목록 열기
+  void _openGroupList() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TempGroupListScreen(
+          userId: widget.userId,
+        ),
+      ),
+    );
+  }
+
+// ✅ 새 그룹 만들기
+Future<void> _createNewGroup() async {
+  final result = await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => TempGroupCreateScreen(
+        userId: widget.userId,
+      ),
+    ),
+  );
+  
+  // 그룹 생성 성공 시
+  if (result != null && mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('✅ "${result.groupName}" 그룹이 생성되었습니다!'),
+        backgroundColor: Colors.green,
+        action: SnackBarAction(
+          label: '보기',
+          textColor: Colors.white,
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => TempGroupDetailScreen(
+                  userId: widget.userId,
+                  groupId: result.id,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
     debugPrint('🎬 ════════════════════ initState 완료 ════════════════════');
     debugPrint('');
+  }
+
+  // ✅✅✅ 초대 코드로 참여 (새로 추가)
+  void _joinWithCode() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TempGroupJoinScreen(
+          userId: widget.userId,
+        ),
+      ),
+    );
   }
 
   // ============================================
@@ -4248,10 +4358,86 @@ class _MapPageState extends State<MapPage> {
         debugPrint('⚠️ 주소 핀 제거 실패: $e');
       });
     }
-    
+
+    // ✅ 저장된 참조 사용 (context 사용 안 함!)
+    _locationsProvider?.removeListener(_handleMapMoveRequest);
+    _locationsProvider = null;
+
+    // ✅✅✅ 리스너 제거 (dispose 시작 부분에)
+    try {
+      final locationsProvider = context.read<LocationsProvider>();
+      locationsProvider.removeListener(_handleMapMoveRequest);
+      debugPrint('✅ 지도 이동 리스너 제거 완료');
+    } catch (e) {
+      debugPrint('⚠️ 리스너 제거 오류 (무시 가능): $e');
+    }
+
     debugPrint('🛑 ════════════════════ dispose 완료 ════════════════════');
     
     super.dispose();
+  }
+
+  // ✅✅✅ 지도 이동 요청 처리 (State 클래스 안에 추가)
+  void _handleMapMoveRequest() {
+    //debugPrint('');
+    //debugPrint('🎧 ════════════════════ _handleMapMoveRequest 호출됨 ════════════════════');
+
+    if (!mounted) {
+      debugPrint('⚠️ MapPage가 이미 dispose되어 지도 이동 무시');
+      return;
+    }
+
+    //final provider = context.read<LocationsProvider>();
+
+    try {
+      final locationsProvider = context.read<LocationsProvider>();
+      final target = locationsProvider.targetMapLocation;
+      
+      //debugPrint('📍 타겟 위치: $target');
+      
+      if (target == null) {
+        // debugPrint('ℹ️ 타겟이 null - 아무 작업 안 함');
+        // debugPrint('🎧 ══════════════════════════════════════════════════');
+        // debugPrint('');
+        return;
+      }
+      
+      // debugPrint('✅ 타겟 발견! 지도 이동 시작');
+      // debugPrint('   - latitude: ${target.latitude}');
+      // debugPrint('   - longitude: ${target.longitude}');
+      // debugPrint('   - _isDesktop: $_isDesktop');
+      // debugPrint('   - _mapLibreController: ${_mapLibreController != null}');
+      
+      if (_isDesktop) {
+        debugPrint('🖥️ 데스크톱: FlutterMap으로 이동');
+        _mapController.move(
+          latlong.LatLng(target.latitude, target.longitude),
+          17.0,
+        );
+        debugPrint('✅ FlutterMap 이동 완료');
+      } else if (_mapLibreController != null) {
+        debugPrint('📱 모바일: MapLibre로 이동');
+        _mapLibreController!.animateCamera(
+          CameraUpdate.newLatLngZoom(
+            LatLng(target.latitude, target.longitude),
+            17.0,
+          ),
+          duration: const Duration(milliseconds: 1000),
+        );
+        debugPrint('✅ MapLibre 이동 애니메이션 시작');
+      } else {
+        debugPrint('⚠️ 지도 컨트롤러가 준비되지 않음');
+      }
+      
+      debugPrint('🎧 ══════════════════════════════════════════════════');
+      debugPrint('');
+      
+    } catch (e, stackTrace) {
+      debugPrint('❌ _handleMapMoveRequest 에러: $e');
+      debugPrint('Stack trace: $stackTrace');
+      debugPrint('🎧 ══════════════════════════════════════════════════');
+      debugPrint('');
+    }
   }
 
   // ✅ 3. 샵 마커 클릭 핸들러
@@ -5678,7 +5864,155 @@ class _MapPageState extends State<MapPage> {
               ? '실시간 위치 공유 (샵 주인)'
               : '실시간 위치 공유'
         ),
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
         actions: [
+          // ✅✅✅ 그룹 채팅 버튼 (새로 추가!)
+          Consumer<TempGroupMessagesProvider>(
+            builder: (context, msgProvider, _) {
+              final totalUnread = msgProvider.totalUnreadCount;
+              
+              return Stack(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.chat_bubble_outline),
+                    onPressed: () => _showGroupChatList(context),
+                    tooltip: '그룹 채팅',
+                  ),
+                  if (totalUnread > 0)
+                    Positioned(
+                      right: 8,
+                      top: 8,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                        constraints: const BoxConstraints(
+                          minWidth: 16,
+                          minHeight: 16,
+                        ),
+                        child: Text(
+                          totalUnread > 99 ? '99+' : '$totalUnread',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          // ✅✅✅ 시간 제한 그룹 메뉴 (새로 추가)
+          Consumer<TempGroupsProvider>(
+            builder: (context, groupProvider, _) {
+              final activeCount = groupProvider.activeGroups.length;
+              final hasActiveGroups = groupProvider.myGroups.isNotEmpty;
+              
+              return PopupMenuButton<String>(
+                icon: Stack(
+                  children: [
+                    const Icon(Icons.group),
+                      if (hasActiveGroups)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(2),
+                          width: 8,   // ✅ 작은 점으로 변경
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 16,
+                            minHeight: 16,
+                          ),
+                          child: Text(
+                            '$activeCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                tooltip: '그룹',
+                onSelected: _handleGroupAction,
+                itemBuilder: (context) => [
+                  // 내 그룹 목록
+                  const PopupMenuItem(
+                    value: 'list',
+                    child: Row(
+                      children: [
+                        Icon(Icons.list, size: 20),
+                        SizedBox(width: 12),
+                        Text('내 그룹'),
+                      ],
+                    ),
+                  ),
+                  
+                  // 새 그룹 만들기
+                  const PopupMenuItem(
+                    value: 'create',
+                    child: Row(
+                      children: [
+                        Icon(Icons.add_circle, size: 20, color: Colors.green),
+                        SizedBox(width: 12),
+                        Text('새 그룹 만들기'),
+                      ],
+                    ),
+                  ),
+
+                  // ✅✅✅ 초대 코드로 참여 (새로 추가됨)
+                  const PopupMenuItem(
+                    value: 'join',
+                    child: Row(
+                      children: [
+                        Icon(Icons.vpn_key, size: 20, color: Colors.orange),
+                        SizedBox(width: 12),
+                        Text('초대 코드로 참여'),
+                      ],
+                    ),
+                  ),
+
+                  const PopupMenuDivider(),
+                  
+                  // 활성 그룹 수 표시
+                  PopupMenuItem(
+                    value: 'active',
+                    enabled: activeCount > 0,
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.access_time,
+                          size: 20,
+                          color: activeCount > 0 ? Colors.blue : Colors.grey,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          '활성 그룹 ($activeCount개)',
+                          style: TextStyle(
+                            color: activeCount > 0 ? Colors.black : Colors.grey,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
           // ✅ 유저 모드일 때 홍보 리스트 버튼
           if (_currentRole == UserRole.user)
             Tooltip(
@@ -6903,6 +7237,134 @@ class _MapPageState extends State<MapPage> {
     } catch (e) {
       debugPrint('❌ 기본 그룹 생성 실패: $e');
     }
+  }
+
+  // ✅✅✅ 그룹 채팅 리스트 모달
+  void _showGroupChatList(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) {
+          return Consumer2<TempGroupsProvider, TempGroupMessagesProvider>(
+            builder: (context, groupsProvider, msgProvider, _) {
+            // ✅ 삭제되지 않은 활성 그룹만 필터링
+            //final groups = groupsProvider.myGroups;
+            final groups = groupsProvider.myGroups
+                .where((g) => g.status != TempGroupStatus.deleted)
+                .toList();
+              
+              return Column(
+                children: [
+                  // 헤더
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      border: Border(
+                        bottom: BorderSide(color: Colors.grey[300]!),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          '그룹 채팅',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            Navigator.pop(context);
+                            Navigator.pushNamed(context, '/temp_groups');
+                          },
+                          child: const Text('전체 보기'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  
+                  // 채팅 리스트
+                  Expanded(
+                    child: groups.isEmpty
+                        ? const Center(
+                            child: Text('참여 중인 그룹이 없습니다'),
+                          )
+                        : ListView.builder(
+                            controller: scrollController,
+                            itemCount: groups.length,
+                            itemBuilder: (context, index) {
+                              final group = groups[index];
+                              final unreadCount = msgProvider.getUnreadCount(group.id);
+                              
+                              return ListTile(
+                                leading: CircleAvatar(
+                                  child: Text(group.groupName[0]),
+                                ),
+                                title: Text(
+                                  group.groupName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  '${group.memberCount}명 · ${group.formattedRemainingTime}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                                trailing: unreadCount > 0
+                                    ? Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 4,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.red,
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Text(
+                                          unreadCount > 99 ? '99+' : '$unreadCount',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      )
+                                    : null,
+                                onTap: () {
+                                  Navigator.pop(context);
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => TempGroupChatScreen(
+                                        groupId: group.id,
+                                        userId: widget.userId,
+                                      ),
+                                    ),
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _loadGroupsFromDB() async {

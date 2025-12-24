@@ -45,6 +45,31 @@ class LocationsProvider with ChangeNotifier {
     _startAutoSave(); // ✅ 자동 저장 타이머 시작
   }
 
+  // ✅✅✅ 지도 이동 트리거 필드 추가
+  LatLng? _targetMapLocation;
+  LatLng? get targetMapLocation => _targetMapLocation;
+  
+  // ✅✅✅ 지도 이동 트리거 메서드 추가
+  void triggerMapMove(double lat, double lng) {
+    debugPrint('');
+    debugPrint('🎯 ════════════════════ triggerMapMove 호출 ════════════════════');
+    debugPrint('📍 목표 위치: ($lat, $lng)');
+    
+    _targetMapLocation = LatLng(lat, lng);
+    
+    debugPrint('📢 notifyListeners() 호출');
+    notifyListeners();
+    
+    debugPrint('⏰ 500ms 후 타겟 초기화 예약');
+    // 이동 후 타겟 초기화 (한 번만 트리거)
+    Future.delayed(const Duration(milliseconds: 500), () {
+      _targetMapLocation = null;
+      debugPrint('🗑️ 타겟 초기화 완료');
+      debugPrint('🎯 ═══════════════════════════════════════════════');
+      debugPrint('');
+    });
+  }
+
   // ---------- Appwrite 초기화 (login/logout 후 전역 인스턴스가 바뀌면 호출) ----------
   void _initAppwrite() {
     _db = appwriteDB;

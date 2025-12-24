@@ -676,7 +676,7 @@ class _ShopOwnerPageState extends State<ShopOwnerPage> {
                     ),
                     subtitle: selectedAddress != null
                         ? Text(
-                            selectedAddress!,
+                            selectedAddress,
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           )
@@ -824,8 +824,8 @@ class _ShopOwnerPageState extends State<ShopOwnerPage> {
                   ownerId: widget.userId,
                   shopName: nameController.text,
                   category: selectedCategory,
-                  lat: selectedLat!,
-                  lng: selectedLng!,
+                  lat: selectedLat,
+                  lng: selectedLng,
                   address: selectedAddress!,
                   phone: phoneController.text,
                   description: descController.text,

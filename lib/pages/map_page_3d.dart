@@ -6,7 +6,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:provider/provider.dart';
-import 'package:intl/intl.dart';
+//import 'package:intl/intl.dart';
 
 import '../providers/locations_provider.dart';
 import '../providers/auth_provider.dart';
@@ -471,67 +471,6 @@ class _MapPageState extends State<MapPage> {
     } else {
       return '$s초';
     }
-  }
-
-  Future<Map<String, dynamic>?> _fetchUserProfile(String userId) async {
-    try {
-      final res = await _db.listDocuments(
-        databaseId: AppwriteConstants.databaseId,
-        collectionId: AppwriteConstants.usersCollectionId,
-        queries: [Query.equal('userId', userId)],
-      );
-
-      if (res.documents.isNotEmpty) {
-        return res.documents.first.data;
-      }
-      return null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  void _showUserInfo(LocationModel user) async {
-    final profile = await _fetchUserProfile(user.userId);
-    final provider = context.read<LocationsProvider>();
-    
-    final nickname = profile?['nickname'] ?? profile?['name'] ?? user.userId;
-    final profileImage = profile?['profileImage'];
-    final stayInfo = _formatDuration(user.userId, provider);
-
-    // ignore: use_build_context_synchronously
-    showModalBottomSheet(
-      context: context,
-      builder: (_) {
-        return Container(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircleAvatar(
-                radius: 36,
-                backgroundImage: profileImage != null
-                    ? NetworkImage(profileImage)
-                    : null,
-                child: profileImage == null
-                    ? Text(nickname.isNotEmpty
-                        ? nickname[0].toUpperCase()
-                        : '?')
-                    : null,
-              ),
-              const SizedBox(height: 10),
-              Text(
-                '$nickname ${stayInfo.isNotEmpty ? "($stayInfo)" : ""}',
-                style: const TextStyle(
-                    fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              Text('(${user.lat.toStringAsFixed(5)}, ${user.lng.toStringAsFixed(5)})'),
-              const SizedBox(height: 8),
-              Text('업데이트: ${DateFormat('HH:mm:ss').format(user.timestamp)}'),
-            ],
-          ),
-        );
-      },
-    );
   }
 
   void _moveToMyLocation(LocationsProvider provider) async {
